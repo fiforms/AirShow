@@ -1,6 +1,7 @@
 #include <QGuiApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QQmlContext>
 #include <QStandardPaths>
 #include <QNetworkInterface>
@@ -237,11 +238,18 @@ int main(int argc, char* argv[]) {
 
     // DLNA SSDP advertisement (DISC-03) — construct only, start AFTER DlnaHandler wired
     // Data files sit in resources/ next to the binary (dev builds, Windows zip,
-    // AppImage) or in Contents/Resources inside the macOS app bundle.
+    // AppImage), in Contents/Resources inside the macOS app bundle, or in
+    // share/airshow beside bin/ for an installed build (Debian package).
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QString resourceDir = QDir(appDir + "/../Resources/dlna").exists()
-        ? QDir::cleanPath(appDir + "/../Resources")
-        : appDir + "/resources";
+    QString resourceDir = appDir + "/resources";
+    for (const QString& candidate : {appDir + "/resources",
+                                     appDir + "/../Resources",
+                                     appDir + "/../share/airshow"}) {
+        if (QDir(candidate + "/dlna").exists()) {
+            resourceDir = QDir::cleanPath(candidate);
+            break;
+        }
+    }
     const std::string dlnaXmlPath = (resourceDir + "/dlna/MediaRenderer.xml").toStdString();
     airshow::UpnpAdvertiser upnpAdvertiser(&settings, dlnaXmlPath);
 
@@ -352,8 +360,10 @@ int main(int argc, char* argv[]) {
 
     // Web interface on port 7401 — serves landing page with QR code + sender app download
     airshow::WebInterface webInterface(&settings);
-    // Check for a bundled sender APK in the app directory
-    QString apkPath = QCoreApplication::applicationDirPath() + "/sender.apk";
+    // Check for a bundled sender APK in the app directory, then the data directory
+    QString apkPath = appDir + "/sender.apk";
+    if (!QFile::exists(apkPath) && QFile::exists(resourceDir + "/sender.apk"))
+        apkPath = resourceDir + "/sender.apk";
     webInterface.setApkPath(apkPath);
     if (!webInterface.start()) {
         qWarning("Web interface failed to start on port 7401 — "
