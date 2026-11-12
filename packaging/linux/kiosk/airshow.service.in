@@ -1,0 +1,17 @@
+[Unit]
+Description=AirShow screen mirroring receiver
+Documentation=file:///usr/share/doc/airshow/README.kiosk.md
+# Started by airshow-kiosk start (via airshow-browser.service) from the
+# compositor's autostart, once WAYLAND_DISPLAY has been imported.
+
+[Service]
+# AirShow sends READY=1 once its window is on screen.
+Type=notify
+NotifyAccess=main
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/airshow-kiosk receiver
+ExecStartPost=-@CMAKE_INSTALL_FULL_BINDIR@/airshow-kiosk raise-browser
+# Bring the browser back if AirShow stops mid-session.
+ExecStopPost=-@CMAKE_INSTALL_FULL_BINDIR@/airshow-kiosk session-end
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=90

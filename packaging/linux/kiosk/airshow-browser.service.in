@@ -1,0 +1,12 @@
+[Unit]
+Description=Kiosk browser shown over AirShow while nobody is casting
+Documentation=file:///usr/share/doc/airshow/README.kiosk.md
+Wants=airshow.service
+# airshow.service is Type=notify: this starts only once AirShow's window is
+# on screen, so the browser maps on top of it.
+After=airshow.service
+
+[Service]
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/airshow-kiosk browser
+Restart=on-failure
+RestartSec=3
