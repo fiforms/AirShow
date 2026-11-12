@@ -64,4 +64,32 @@ TEST(AirPlayDnssdTest, BuildsTxtRecordsWithoutSystemMdns) {
     dnssd_destroy(dnssd);
 }
 
+TEST(AirPlayPinTest, RaopPinValueFixed) {
+    // UxPlay reads values above 9999 as a fixed PIN (value % 10000).
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("1234"), 11234);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("0000"), 10000);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("0123"), 10123);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("9999"), 19999);
+}
+
+TEST(AirPlayPinTest, RaopPinValueInvalidMeansRandom) {
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue(""), 0);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("123"), 0);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("12345"), 0);
+    EXPECT_EQ(airshow::AirPlayHandler::raopPinValue("12x4"), 0);
+}
+
+TEST(AirPlayPinTest, DnssdAdvertisesPasswordInPinMode) {
+    const char hw[6] = {'\xaa', '\xbb', '\xcc', 1, 2, 3};
+    int err = 0;
+    dnssd_t* dnssd = dnssd_init("Room", 4, hw, 6, &err, 1);
+    ASSERT_NE(dnssd, nullptr);
+    int len = 0;
+    const char* txt = dnssd_get_airplay_txt(dnssd, &len);
+    EXPECT_NE(std::string(txt, len).find("pw=true"), std::string::npos);
+    txt = dnssd_get_raop_txt(dnssd, &len);
+    EXPECT_NE(std::string(txt, len).find("pw=true"), std::string::npos);
+    dnssd_destroy(dnssd);
+}
+
 } // namespace

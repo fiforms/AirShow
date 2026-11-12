@@ -58,6 +58,10 @@ bool DiscoveryManager::start() {
     // Placeholder public key: 64 zero bytes as hex (Phase 4 will replace with real key)
     const std::string pkPlaceholder(128, '0');
 
+    // pw=true tells iOS to ask for the receiver's PIN before mirroring (matches
+    // UxPlay's dnssd.c for pin_pw=1; AirPlayHandler sets the same in /info).
+    const bool pinEnabled = m_settings->pinEnabled();
+
     // --- _airplay._tcp (DISC-01) ---
     std::vector<TxtRecord> airplayTxt = {
         {"deviceid", mac},
@@ -66,6 +70,8 @@ bool DiscoveryManager::start() {
         {"srcvers",  "220.68"},
         {"pk",       pkPlaceholder},
         {"pi",       pi},
+        {"pw",       pinEnabled ? "true" : "false"},
+        {"flags",    "0x4"},
     };
     m_advertiser->advertise("_airplay._tcp", name, kAirPlayPort, airplayTxt);
 
@@ -79,7 +85,7 @@ bool DiscoveryManager::start() {
         {"da",      "true"},
         {"et",      "0,3,5"},
         {"md",      "0,1,2"},
-        {"pw",      "false"},
+        {"pw",      pinEnabled ? "true" : "false"},
         {"sr",      "44100"},
         {"ss",      "16"},
         {"tp",      "UDP"},
