@@ -107,7 +107,9 @@ sudo apt build-dep ./
 dpkg-buildpackage -us -uc -b                # writes ../airshow_*.deb
 ```
 
-The package also installs **kiosk mode**: AirShow runs fullscreen underneath a kiosk browser such as Chromium, and the browser is hidden while someone is casting. See [packaging/linux/kiosk/README.md](packaging/linux/kiosk/README.md) (installed as `/usr/share/doc/airshow/README.kiosk.md`). The hooks it uses, `--on-session-start` and `--on-session-end`, work on any platform.
+### Kiosk and signage integration
+
+AirShow doesn't manage the rest of the display, but your own scripts can react when someone starts or stops casting. For example, they can hide a fullscreen browser while a session is on screen. `--on-session-start` and `--on-session-end` run a shell command, with the sender's name and protocol in the environment. Under systemd, a `Type=notify` unit reports ready once AirShow's window is on screen. [docs/session-hooks.md](docs/session-hooks.md) gives the details and a worked example for labwc and Chromium. The Debian package installs it as `/usr/share/doc/airshow/session-hooks.md`.
 
 ### macOS (Homebrew)
 

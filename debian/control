@@ -55,6 +55,6 @@ Description: screen mirroring receiver for AirPlay, Google Cast, Miracast and DL
  mirroring from Chrome and Android, Miracast from Windows and Android, and
  media pushed by DLNA controllers.
  .
- It also includes airshow-kiosk and systemd user units that run AirShow
- underneath a fullscreen kiosk browser and hide the browser while someone
- is casting; see /usr/share/doc/airshow/README.kiosk.md.
+ Kiosk and signage setups can react to casting through command hooks
+ (--on-session-start, --on-session-end) and systemd Type=notify readiness;
+ see /usr/share/doc/airshow/session-hooks.md.

@@ -171,7 +171,6 @@ jobs:
           grep -q "CastHandler: listening on port 8009" smoke.log
           grep -q "AirShowHandler: listening on port 7400" smoke.log
           grep -q "DLNA MediaRenderer advertising" smoke.log
-          sh -n /usr/bin/airshow-kiosk
 
       - uses: actions/upload-artifact@v4
         with:

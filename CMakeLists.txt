@@ -256,17 +256,7 @@ if(UNIX AND NOT APPLE)
           DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
   install(FILES resources/icons/airshow.png
           DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps)
-
-  # Kiosk mode: AirShow underneath a fullscreen browser (packaging/linux/kiosk)
-  foreach(unit airshow.service airshow-browser.service)
-    configure_file(packaging/linux/kiosk/${unit}.in ${CMAKE_CURRENT_BINARY_DIR}/kiosk/${unit} @ONLY)
-    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/kiosk/${unit}
-            DESTINATION lib/systemd/user)
-  endforeach()
-  install(PROGRAMS packaging/linux/kiosk/airshow-kiosk DESTINATION ${CMAKE_INSTALL_BINDIR})
-  install(FILES packaging/linux/kiosk/kiosk.conf DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/airshow)
-  install(FILES packaging/linux/kiosk/README.md
-          DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/airshow RENAME README.kiosk.md)
+  install(FILES docs/session-hooks.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/airshow)
 endif()
 
 # Tests (need GoogleTest; packagers can pass -DBUILD_TESTING=OFF)
