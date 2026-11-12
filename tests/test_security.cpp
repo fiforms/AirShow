@@ -146,6 +146,80 @@ TEST_F(AppSettingsPinTest, RequireApprovalRoundTrip) {
     EXPECT_FALSE(s.requireApproval());
 }
 
+TEST_F(AppSettingsPinTest, IsValidPin) {
+    EXPECT_TRUE(airshow::SecurityManager::isValidPin("0000"));
+    EXPECT_TRUE(airshow::SecurityManager::isValidPin("0123"));
+    EXPECT_TRUE(airshow::SecurityManager::isValidPin("9999"));
+    EXPECT_FALSE(airshow::SecurityManager::isValidPin(""));
+    EXPECT_FALSE(airshow::SecurityManager::isValidPin("123"));
+    EXPECT_FALSE(airshow::SecurityManager::isValidPin("12345"));
+    EXPECT_FALSE(airshow::SecurityManager::isValidPin("12a4"));
+    EXPECT_FALSE(airshow::SecurityManager::isValidPin(" 123"));
+}
+
+TEST_F(AppSettingsPinTest, PinGeneratedWhenEnabledAndMissing) {
+    airshow::AppSettings s;
+    s.setPinEnabled(true);
+    airshow::SecurityManager mgr(s);
+    EXPECT_TRUE(airshow::SecurityManager::isValidPin(s.pin()));
+    EXPECT_EQ(mgr.pin(), s.pin());
+}
+
+TEST_F(AppSettingsPinTest, PinReplacedWhenMalformed) {
+    airshow::AppSettings s;
+    s.setPinEnabled(true);
+    s.setPin("12");
+    airshow::SecurityManager mgr(s);
+    EXPECT_TRUE(airshow::SecurityManager::isValidPin(s.pin()));
+}
+
+TEST_F(AppSettingsPinTest, ValidPinKept) {
+    airshow::AppSettings s;
+    s.setPinEnabled(true);
+    s.setPin("0420");
+    airshow::SecurityManager mgr(s);
+    EXPECT_EQ(s.pin(), "0420");
+}
+
+TEST_F(AppSettingsPinTest, PinPairedClientsRoundTrip) {
+    airshow::AppSettings s;
+    EXPECT_TRUE(s.pinPairedClients().isEmpty());
+    s.addPinPairedClient("a2V5MQ==");
+    s.addPinPairedClient("a2V5MQ==");  // no duplicates
+    s.addPinPairedClient("k/+2=");
+    EXPECT_EQ(s.pinPairedClients(), QStringList({"a2V5MQ==", "k/+2="}));
+    s.clearPinPairedClients();
+    EXPECT_TRUE(s.pinPairedClients().isEmpty());
+}
+
+TEST_F(AppSettingsPinTest, ChangingPinForgetsPairedClients) {
+    airshow::AppSettings s;
+    s.setPin("1111");
+    s.addPinPairedClient("a2V5MQ==");
+    s.setPin("1111");  // same PIN: keep pairings
+    EXPECT_EQ(s.pinPairedClients().size(), 1);
+    s.setPin("2222");
+    EXPECT_TRUE(s.pinPairedClients().isEmpty());
+}
+
+TEST_F(AppSettingsPinTest, SecurityManagerChecksPairedClients) {
+    airshow::AppSettings s;
+    s.setPinEnabled(true);
+    s.setPin("1234");
+    airshow::SecurityManager mgr(s);
+    EXPECT_FALSE(mgr.isPinPairedClient("a2V5MQ=="));
+    EXPECT_FALSE(mgr.isPinPairedClient(""));
+    mgr.addPinPairedClient("a2V5MQ==");
+    EXPECT_TRUE(mgr.isPinPairedClient("a2V5MQ=="));
+    EXPECT_FALSE(mgr.isPinPairedClient("b3RoZXI="));
+}
+
+TEST_F(AppSettingsPinTest, NoPinGeneratedWhenDisabled) {
+    airshow::AppSettings s;
+    airshow::SecurityManager mgr(s);
+    EXPECT_EQ(s.pin(), QString());
+}
+
 // ---------------------------------------------------------------------------
 // SEC-01 — AppSettings trusted device list persistence
 // ---------------------------------------------------------------------------

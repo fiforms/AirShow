@@ -8,6 +8,7 @@
 //   requestApproval signal — dispatched to Qt main thread via QueuedConnection
 
 #include "security/SecurityManager.h"
+#include <QRandomGenerator>
 #include "settings/AppSettings.h"
 
 #include <QHostAddress>
@@ -24,7 +25,14 @@ namespace airshow {
 
 SecurityManager::SecurityManager(AppSettings& settings, QObject* parent)
     : QObject(parent), m_settings(settings)
-{}
+{
+    // With PIN pairing on, the receiver needs a fixed PIN to show on screen.
+    // If none is stored (or it is malformed), pick one and keep it.
+    if (m_settings.pinEnabled() && !isValidPin(m_settings.pin())) {
+        const quint32 n = QRandomGenerator::system()->bounded(10000u);
+        m_settings.setPin(QStringLiteral("%1").arg(n, 4, 10, QLatin1Char('0')));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Testability hook
@@ -226,6 +234,22 @@ bool SecurityManager::isPinEnabled() const {
 
 QString SecurityManager::pin() const {
     return m_settings.pin();
+}
+
+void SecurityManager::addPinPairedClient(const QString& pk) {
+    m_settings.addPinPairedClient(pk);
+}
+
+bool SecurityManager::isPinPairedClient(const QString& pk) const {
+    return !pk.isEmpty() && m_settings.pinPairedClients().contains(pk);
+}
+
+bool SecurityManager::isValidPin(const QString& pin) {
+    if (pin.size() != 4) return false;
+    for (const QChar c : pin) {
+        if (c < QLatin1Char('0') || c > QLatin1Char('9')) return false;
+    }
+    return true;
 }
 
 } // namespace airshow

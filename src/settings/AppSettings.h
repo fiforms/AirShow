@@ -55,8 +55,16 @@ public:
 
     // The 4-digit PIN string displayed to users for pairing (default: "").
     // Key: "security/pin"
+    // Changing it forgets every PIN-paired client, so they must enter the new PIN.
     QString pin() const;
     void setPin(const QString& v);
+
+    // Ed25519 public keys (base64) of AirPlay clients that paired with the PIN.
+    // Returning clients must present one of these to skip the PIN.
+    // Key: "security/pinPairedClients"
+    QStringList pinPairedClients() const;
+    void addPinPairedClient(const QString& pk);
+    void clearPinPairedClients();
 
     // List of stable device identifiers that have been approved for connection
     // without re-prompting (MAC for AirPlay, UUID for Cast, IP+UA for DLNA).
