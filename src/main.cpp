@@ -221,6 +221,9 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("AirShow");
 
     QGuiApplication app(argc, argv);
+    // Wayland app_id (and the .desktop file it maps to): lets compositor window
+    // rules and kiosk scripts match AirShow's window.
+    QGuiApplication::setDesktopFileName(QStringLiteral("airshow"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("AirShow screen mirroring receiver"));
