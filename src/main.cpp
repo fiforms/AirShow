@@ -9,6 +9,7 @@
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
 #include "ui/ConnectionBridge.h"
+#include "ui/SessionHooks.h"
 #include "settings/AppSettings.h"
 #include "security/SecurityManager.h"
 #include "discovery/DiscoveryManager.h"
@@ -204,6 +205,19 @@ int main(int argc, char* argv[]) {
                        "for this run (Linux). To turn it off permanently, set "
                        "wifiDirectBeacon=false under [miracast] in the settings file."));
     parser.addOption(noBeaconOption);
+    const QCommandLineOption sessionStartOption(
+        QStringList{QStringLiteral("on-session-start")},
+        QStringLiteral("Shell command to run when someone starts mirroring (or an "
+                       "approval prompt appears). AIRSHOW_DEVICE and AIRSHOW_PROTOCOL "
+                       "are set in its environment."),
+        QStringLiteral("command"));
+    parser.addOption(sessionStartOption);
+    const QCommandLineOption sessionEndOption(
+        QStringList{QStringLiteral("on-session-end")},
+        QStringLiteral("Shell command to run a few seconds after mirroring ends, "
+                       "and on exit if a session is still active."),
+        QStringLiteral("command"));
+    parser.addOption(sessionEndOption);
     parser.process(app);
 
 #ifndef _WIN32
@@ -274,6 +288,11 @@ int main(int argc, char* argv[]) {
                      &airshow::ConnectionBridge::showApprovalRequest);
     window.engine()->rootContext()->setContextProperty(
         QStringLiteral("securityManager"), &securityManager);
+
+    // --on-session-start / --on-session-end (e.g. hide a kiosk browser while casting)
+    airshow::SessionHooks sessionHooks(window.connectionBridge(),
+                                       parser.value(sessionStartOption),
+                                       parser.value(sessionEndOption));
 
     // Protocol manager owns all protocol handlers
     airshow::ProtocolManager protocolManager(&pipeline);

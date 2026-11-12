@@ -271,3 +271,14 @@ target_link_libraries(test_security PRIVATE
 )
 
 gtest_discover_tests(test_security TEST_SUFFIX "" PROPERTIES TIMEOUT 30)
+
+# SessionHooks — --on-session-start / --on-session-end
+add_executable(test_session_hooks
+  test_session_hooks.cpp
+  ${CMAKE_SOURCE_DIR}/src/ui/ConnectionBridge.cpp
+  ${CMAKE_SOURCE_DIR}/src/ui/SessionHooks.cpp
+)
+target_include_directories(test_session_hooks PRIVATE ${CMAKE_SOURCE_DIR}/src)
+find_package(Qt6 REQUIRED COMPONENTS Test)
+target_link_libraries(test_session_hooks PRIVATE GTest::gtest GTest::gmock Qt6::Core Qt6::Test)
+gtest_discover_tests(test_session_hooks TEST_SUFFIX "" PROPERTIES TIMEOUT 30)
