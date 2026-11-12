@@ -202,7 +202,7 @@ void AirShowHandler::handleHandshake() {
     // Update the connection HUD
     if (m_connectionBridge) {
         m_connectionBridge->setConnected(true, m_clientDeviceName,
-                                         QStringLiteral("airshow"));
+                                         QStringLiteral("AirShow"));
     }
 
     qInfo("AirShowHandler: handshake complete — device='%s', streaming on port %u",

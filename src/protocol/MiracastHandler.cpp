@@ -249,7 +249,7 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
         QPointer<MiracastHandler> self(this);
         QPointer<QTcpSocket>      client(m_miceClient);
         m_securityManager->checkConnectionAsync(
-            m_sourceName, QStringLiteral("miracast"), m_sourceAddr.toString(),
+            m_sourceName, QStringLiteral("Miracast"), m_sourceAddr.toString(),
             [self, client](bool approved) {
                 if (!self || !client || client != self->m_miceClient ||
                     self->m_state != State::WaitingSourceReady) {
@@ -550,7 +550,7 @@ void MiracastHandler::handleRtspResponse(const RtspMessage& msg) {
         // Update HUD (D-16)
         if (m_connectionBridge) {
             m_connectionBridge->setConnected(true, m_sourceName,
-                                             QStringLiteral("miracast"));
+                                             QStringLiteral("Miracast"));
         }
 
         m_state = State::Streaming;
