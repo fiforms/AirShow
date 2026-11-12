@@ -1,5 +1,6 @@
 #pragma once
 #include "protocol/ProtocolHandler.h"
+#include <atomic>
 #include <string>
 #include <cstdint>
 #include <QObject>
@@ -78,6 +79,9 @@ private:
     std::string       m_currentDeviceName;  // set by onReportClientRequest
     bool              m_running          = false;
     bool              m_audioCapsSet     = false;
+    // Open RAOP connections. iOS often opens a second, short-lived socket (e.g. on
+    // another IPv6 address) alongside the real session; only the last close ends it.
+    std::atomic<int>  m_activeConnections{0};
 };
 
 } // namespace airshow

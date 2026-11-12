@@ -37,6 +37,7 @@ Prebuilt builds are on the [Releases](https://github.com/zitlem/AirShow/releases
 | Windows 10/11 (x64) | `AirShow-windows-x64.zip` | Unzip anywhere, run `AirShow\airshow.exe` |
 | macOS 13+ (Apple Silicon) | `AirShow-macos-arm64.dmg` | Open the .dmg and run AirShow (or drag it anywhere). It isn't notarized: the first time, right-click → **Open**. |
 | Linux (x86_64, glibc 2.35+) | `AirShow-linux-x86_64.AppImage` | `chmod +x AirShow-*.AppImage && ./AirShow-*.AppImage` |
+| Debian 13 / Raspberry Pi OS (arm64, amd64) | `airshow_<version>_arm64.deb` / `_amd64.deb` | `sudo apt install ./airshow_*.deb`, then run `airshow` (installed, not in place) |
 
 Device discovery (AirPlay, Google Cast, Miracast) needs nothing extra: AirShow uses the system's mDNS service where there is one (macOS, Avahi on Linux, Bonjour on Windows if installed) and otherwise answers mDNS itself with its built-in responder. On Windows, allow AirShow through the firewall on private networks when asked.
 
@@ -88,6 +89,27 @@ sudo apt install \
 git submodule update --init
 ./build-and-run.sh            # add --windowed for a normal window
 ```
+
+### Debian package (Debian 13, Raspberry Pi OS)
+
+`debian/` builds a `.deb` for Debian 13 (trixie) and Raspberry Pi OS based on it. From any Linux machine with Docker:
+
+```bash
+git submodule update --init
+packaging/debian/build-deb.sh arm64 dist   # 64-bit Raspberry Pi OS; or amd64
+```
+
+Building arm64 on an x86 machine runs under qemu (`sudo apt install qemu-user-binfmt`), which is slow; building on the Pi itself is faster:
+
+```bash
+sudo apt install build-essential
+sudo apt build-dep ./
+dpkg-buildpackage -us -uc -b                # writes ../airshow_*.deb
+```
+
+### Kiosk and signage integration
+
+AirShow doesn't manage the rest of the display, but your own scripts can react when someone starts or stops casting. For example, they can hide a fullscreen browser while a session is on screen. `--on-session-start` and `--on-session-end` run a shell command, with the sender's name and protocol in the environment. Under systemd, a `Type=notify` unit reports ready once AirShow's window is on screen. [docs/session-hooks.md](docs/session-hooks.md) gives the details and a worked example for labwc and Chromium. The Debian package installs it as `/usr/share/doc/airshow/session-hooks.md`.
 
 ### macOS (Homebrew)
 

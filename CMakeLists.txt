@@ -135,6 +135,7 @@ qt_add_executable(airshow
   src/ui/ReceiverWindow.cpp
   src/ui/AudioBridge.cpp
   src/ui/ConnectionBridge.cpp
+  src/ui/SessionHooks.cpp
   src/ui/SettingsBridge.cpp
   src/ui/VideoFrameSink.cpp
   src/protocol/ProtocolManager.cpp
@@ -243,6 +244,24 @@ configure_file(resources/dlna/rc-scpd.xml
 configure_file(resources/dlna/cm-scpd.xml
                ${CMAKE_BINARY_DIR}/resources/dlna/cm-scpd.xml COPYONLY)
 
-# Tests
-enable_testing()
-add_subdirectory(tests)
+# Installation (Linux system packages, e.g. the Debian package in debian/).
+# main.cpp finds the data files in ../share/airshow relative to the binary.
+if(UNIX AND NOT APPLE)
+  include(GNUInstallDirs)
+  install(TARGETS airshow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(DIRECTORY resources/dlna DESTINATION ${CMAKE_INSTALL_DATADIR}/airshow)
+  install(FILES packaging/linux/airshow.desktop
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+  install(FILES resources/icons/airshow.svg
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+  install(FILES resources/icons/airshow.png
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps)
+  install(FILES docs/session-hooks.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/airshow)
+endif()
+
+# Tests (need GoogleTest; packagers can pass -DBUILD_TESTING=OFF)
+option(BUILD_TESTING "Build the unit tests" ON)
+if(BUILD_TESTING)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

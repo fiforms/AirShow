@@ -1,13 +1,16 @@
 #include <QGuiApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QQmlContext>
+#include <QQuickWindow>
 #include <QStandardPaths>
 #include <QNetworkInterface>
 #include <gst/gst.h>
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
 #include "ui/ConnectionBridge.h"
+#include "ui/SessionHooks.h"
 #include "settings/AppSettings.h"
 #include "security/SecurityManager.h"
 #include "discovery/DiscoveryManager.h"
@@ -21,7 +24,9 @@
 #include "protocol/ProtocolManager.h"
 #include "web/WebInterface.h"
 
+#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -39,6 +44,7 @@
 #  include <QSocketNotifier>
 #  include <csignal>
 #  include <sys/socket.h>
+#  include <sys/un.h>
 #  include <unistd.h>
 #endif
 
@@ -183,6 +189,28 @@ static void quitOnSignals(QCoreApplication& app) {
 }
 #endif
 
+#ifdef __linux__
+// Tell systemd (Type=notify units) that AirShow is up and its window is on
+// screen. A kiosk browser unit ordered After=airshow.service then maps its
+// window after AirShow's and stays on top. No-op outside systemd.
+static void notifySystemdReady() {
+    const char* socketPath = std::getenv("NOTIFY_SOCKET");
+    if (!socketPath || !*socketPath) return;
+    std::string path(socketPath);
+    sockaddr_un addr {};
+    if (path.size() >= sizeof(addr.sun_path)) return;
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, path.data(), path.size());
+    if (addr.sun_path[0] == '@') addr.sun_path[0] = '\0';  // abstract namespace
+    const int fd = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+    static const char kReady[] = "READY=1";
+    ::sendto(fd, kReady, sizeof(kReady) - 1, 0, reinterpret_cast<sockaddr*>(&addr),
+             static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size()));
+    ::close(fd);
+}
+#endif
+
 int main(int argc, char* argv[]) {
     useBundledGStreamer();
     gst_init(&argc, &argv);
@@ -193,6 +221,9 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("AirShow");
 
     QGuiApplication app(argc, argv);
+    // Wayland app_id (and the .desktop file it maps to): lets compositor window
+    // rules and kiosk scripts match AirShow's window.
+    QGuiApplication::setDesktopFileName(QStringLiteral("airshow"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("AirShow screen mirroring receiver"));
@@ -203,6 +234,19 @@ int main(int argc, char* argv[]) {
                        "for this run (Linux). To turn it off permanently, set "
                        "wifiDirectBeacon=false under [miracast] in the settings file."));
     parser.addOption(noBeaconOption);
+    const QCommandLineOption sessionStartOption(
+        QStringList{QStringLiteral("on-session-start")},
+        QStringLiteral("Shell command to run when someone starts mirroring (or an "
+                       "approval prompt appears). AIRSHOW_DEVICE and AIRSHOW_PROTOCOL "
+                       "are set in its environment."),
+        QStringLiteral("command"));
+    parser.addOption(sessionStartOption);
+    const QCommandLineOption sessionEndOption(
+        QStringList{QStringLiteral("on-session-end")},
+        QStringLiteral("Shell command to run a few seconds after mirroring ends, "
+                       "and on exit if a session is still active."),
+        QStringLiteral("command"));
+    parser.addOption(sessionEndOption);
     parser.process(app);
 
 #ifndef _WIN32
@@ -237,11 +281,18 @@ int main(int argc, char* argv[]) {
 
     // DLNA SSDP advertisement (DISC-03) — construct only, start AFTER DlnaHandler wired
     // Data files sit in resources/ next to the binary (dev builds, Windows zip,
-    // AppImage) or in Contents/Resources inside the macOS app bundle.
+    // AppImage), in Contents/Resources inside the macOS app bundle, or in
+    // share/airshow beside bin/ for an installed build (Debian package).
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QString resourceDir = QDir(appDir + "/../Resources/dlna").exists()
-        ? QDir::cleanPath(appDir + "/../Resources")
-        : appDir + "/resources";
+    QString resourceDir = appDir + "/resources";
+    for (const QString& candidate : {appDir + "/resources",
+                                     appDir + "/../Resources",
+                                     appDir + "/../share/airshow"}) {
+        if (QDir(candidate + "/dlna").exists()) {
+            resourceDir = QDir::cleanPath(candidate);
+            break;
+        }
+    }
     const std::string dlnaXmlPath = (resourceDir + "/dlna/MediaRenderer.xml").toStdString();
     airshow::UpnpAdvertiser upnpAdvertiser(&settings, dlnaXmlPath);
 
@@ -266,6 +317,11 @@ int main(int argc, char* argv[]) {
                      &airshow::ConnectionBridge::showApprovalRequest);
     window.engine()->rootContext()->setContextProperty(
         QStringLiteral("securityManager"), &securityManager);
+
+    // --on-session-start / --on-session-end (e.g. hide a kiosk browser while casting)
+    airshow::SessionHooks sessionHooks(window.connectionBridge(),
+                                       parser.value(sessionStartOption),
+                                       parser.value(sessionEndOption));
 
     // Protocol manager owns all protocol handlers
     airshow::ProtocolManager protocolManager(&pipeline);
@@ -352,8 +408,10 @@ int main(int argc, char* argv[]) {
 
     // Web interface on port 7401 — serves landing page with QR code + sender app download
     airshow::WebInterface webInterface(&settings);
-    // Check for a bundled sender APK in the app directory
-    QString apkPath = QCoreApplication::applicationDirPath() + "/sender.apk";
+    // Check for a bundled sender APK in the app directory, then the data directory
+    QString apkPath = appDir + "/sender.apk";
+    if (!QFile::exists(apkPath) && QFile::exists(resourceDir + "/sender.apk"))
+        apkPath = resourceDir + "/sender.apk";
     webInterface.setApkPath(apkPath);
     if (!webInterface.start()) {
         qWarning("Web interface failed to start on port 7401 — "
@@ -375,6 +433,17 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+
+#ifdef __linux__
+    // Ready once the receivers are listening and the first frame is on screen.
+    if (auto* quickWindow = window.engine()->rootObjects().isEmpty() ? nullptr
+            : qobject_cast<QQuickWindow*>(window.engine()->rootObjects().first())) {
+        QObject::connect(quickWindow, &QQuickWindow::frameSwapped, &app,
+                         &notifySystemdReady, Qt::SingleShotConnection);
+    } else {
+        notifySystemdReady();
+    }
+#endif
 
     int result = app.exec();
     webInterface.stop();

@@ -116,6 +116,67 @@ jobs:
           name: AirShow-linux-x86_64
           path: dist/AirShow-linux-x86_64.AppImage
 
+  debian:
+    name: Debian package (trixie, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64     # Raspberry Pi OS (64-bit)
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates git build-essential devscripts equivs
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set package version
+        # v1.2.3 tags build 1.2.3; other builds 0.0.0+git<sha>.
+        env:
+          DEBFULLNAME: AirShow CI
+          DEBEMAIL: noreply@github.com
+        run: |
+          case "$VERSION" in
+            v*) debver="${VERSION#v}" ;;
+            *)  debver="0.0.0+git${GITHUB_SHA::8}" ;;
+          esac
+          dch --newversion "$debver" --distribution unstable -b "Automated build."
+
+      - name: Install build dependencies
+        run: mk-build-deps --install --remove --tool "apt-get -y -qq --no-install-recommends" debian/control
+
+      - name: Build
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir -p dist && cp ../airshow_*.deb dist/
+
+      - name: Smoke test package
+        # Install into this container the way a user would; the app must find
+        # its runtime dependencies and data files and open its receivers.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          apt-get install -y -qq ./dist/airshow_*.deb
+          timeout 15 airshow --no-beacon > smoke.log 2>&1 || true
+          cat smoke.log
+          grep -q "CastHandler: listening on port 8009" smoke.log
+          grep -q "AirShowHandler: listening on port 7400" smoke.log
+          grep -q "DLNA MediaRenderer advertising" smoke.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airshow-debian-trixie-${{ matrix.arch }}
+          path: dist/airshow_*.deb
+
   macos:
     name: macOS (Homebrew, Apple Silicon)
     runs-on: macos-15
@@ -222,7 +283,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, linux-appimage, macos, windows]
+    needs: [linux, linux-appimage, debian, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -236,4 +297,6 @@ jobs:
             AirShow-windows-x64.zip
             AirShow-macos-arm64.dmg
             AirShow-linux-x86_64.AppImage
+            airshow_*_arm64.deb
+            airshow_*_amd64.deb
           generate_release_notes: true

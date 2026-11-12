@@ -1,0 +1,60 @@
+Source: airshow
+Section: video
+Priority: optional
+Maintainer: Daniel McFeeters <fiforms@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake (>= 3.28),
+ ninja-build,
+ pkgconf,
+ qt6-base-dev (>= 6.8),
+ qt6-declarative-dev (>= 6.8),
+ libgstreamer1.0-dev (>= 1.20),
+ libgstreamer-plugins-base1.0-dev (>= 1.20),
+ libavahi-client-dev,
+ libavahi-compat-libdnssd-dev,
+ libglib2.0-dev,
+ libupnp-dev,
+ libplist-dev,
+ libssl-dev,
+ libprotobuf-dev,
+ protobuf-compiler,
+ libspdlog-dev,
+Standards-Version: 4.7.0
+Homepage: https://github.com/zitlem/AirShow
+Vcs-Git: https://github.com/zitlem/AirShow.git
+Vcs-Browser: https://github.com/zitlem/AirShow
+Rules-Requires-Root: no
+
+Package: airshow
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-templates,
+ qml6-module-qtquick-window,
+ gstreamer1.0-plugins-base,
+ gstreamer1.0-plugins-good,
+ gstreamer1.0-plugins-bad,
+ gstreamer1.0-plugins-ugly,
+ gstreamer1.0-libav,
+ avahi-daemon,
+Recommends:
+ qt6-wayland,
+ gstreamer1.0-pipewire | gstreamer1.0-pulseaudio | gstreamer1.0-alsa,
+Suggests:
+ wpasupplicant,
+Description: screen mirroring receiver for AirPlay, Google Cast, Miracast and DLNA
+ AirShow turns a computer or a single-board computer attached to a display
+ into a receiver that phones, tablets and laptops can mirror their screens
+ to. It shows a fullscreen idle screen until a sender connects.
+ .
+ It accepts AirPlay screen mirroring from iOS and macOS, Google Cast
+ mirroring from Chrome and Android, Miracast from Windows and Android, and
+ media pushed by DLNA controllers.
+ .
+ Kiosk and signage setups can react to casting through command hooks
+ (--on-session-start, --on-session-end) and systemd Type=notify readiness;
+ see /usr/share/doc/airshow/session-hooks.md.

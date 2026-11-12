@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake+ninja
+
+# The unit tests open network ports and probe GStreamer hardware decoders,
+# which is unreliable in build chroots; CI runs them on every push instead.
+override_dh_auto_configure:
+	dh_auto_configure -- -DBUILD_TESTING=OFF
+
+override_dh_auto_test:
+
+# Keep session-hooks.md readable in place (it's referenced by path).
+override_dh_compress:
+	dh_compress -X.md
