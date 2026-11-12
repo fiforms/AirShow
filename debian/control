@@ -21,9 +21,9 @@ Build-Depends:
  protobuf-compiler,
  libspdlog-dev,
 Standards-Version: 4.7.0
-Homepage: https://github.com/fiforms/AirShow
-Vcs-Git: https://github.com/fiforms/AirShow.git
-Vcs-Browser: https://github.com/fiforms/AirShow
+Homepage: https://github.com/zitlem/AirShow
+Vcs-Git: https://github.com/zitlem/AirShow.git
+Vcs-Browser: https://github.com/zitlem/AirShow
 Rules-Requires-Root: no
 
 Package: airshow
