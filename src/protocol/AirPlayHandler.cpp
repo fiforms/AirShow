@@ -266,6 +266,7 @@ void AirPlayHandler::stop() {
     m_videoAppsrc   = nullptr;
     m_audioAppsrc   = nullptr;
     m_audioCapsSet  = false;
+    m_activeConnections = 0;
     m_currentDeviceName.clear();
 }
 
@@ -381,8 +382,9 @@ void AirPlayHandler::onReportClientRequest(char* deviceid, char* /*model*/,
 }
 
 void AirPlayHandler::onConnectionInit() {
-    g_message("AirPlayHandler::onConnectionInit — device='%s' bridge=%p",
-              m_currentDeviceName.c_str(), static_cast<void*>(m_connectionBridge));
+    const int active = ++m_activeConnections;
+    g_message("AirPlayHandler::onConnectionInit — device='%s' active=%d bridge=%p",
+              m_currentDeviceName.c_str(), active, static_cast<void*>(m_connectionBridge));
     // Update HUD thread-safely via Qt queued connection (D-10)
     if (m_connectionBridge) {
         QString deviceName = QString::fromStdString(m_currentDeviceName);
@@ -394,8 +396,17 @@ void AirPlayHandler::onConnectionInit() {
 }
 
 void AirPlayHandler::onConnectionDestroy() {
-    g_message("AirPlayHandler::onConnectionDestroy — bridge=%p",
-              static_cast<void*>(m_connectionBridge));
+    // Clamp at zero so a stray destroy (e.g. after stop()) can't drive the count negative.
+    int active = m_activeConnections.load();
+    while (active > 0 && !m_activeConnections.compare_exchange_weak(active, active - 1)) {}
+    active = active > 0 ? active - 1 : 0;
+    g_message("AirPlayHandler::onConnectionDestroy — active=%d bridge=%p",
+              active, static_cast<void*>(m_connectionBridge));
+    if (active > 0) {
+        // Another connection (the real mirroring session) is still open — keep the
+        // session UI and per-session state as they are.
+        return;
+    }
     // Update HUD thread-safely (D-10, D-11)
     if (m_connectionBridge) {
         QMetaObject::invokeMethod(m_connectionBridge, [this]() {
