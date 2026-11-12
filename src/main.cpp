@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QQmlContext>
+#include <QQuickWindow>
 #include <QStandardPaths>
 #include <QNetworkInterface>
 #include <gst/gst.h>
@@ -23,7 +24,9 @@
 #include "protocol/ProtocolManager.h"
 #include "web/WebInterface.h"
 
+#include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -41,6 +44,7 @@
 #  include <QSocketNotifier>
 #  include <csignal>
 #  include <sys/socket.h>
+#  include <sys/un.h>
 #  include <unistd.h>
 #endif
 
@@ -182,6 +186,28 @@ static void quitOnSignals(QCoreApplication& app) {
     for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
         ::sigaction(sig, &sa, nullptr);
     }
+}
+#endif
+
+#ifdef __linux__
+// Tell systemd (Type=notify units) that AirShow is up and its window is on
+// screen. A kiosk browser unit ordered After=airshow.service then maps its
+// window after AirShow's and stays on top. No-op outside systemd.
+static void notifySystemdReady() {
+    const char* socketPath = std::getenv("NOTIFY_SOCKET");
+    if (!socketPath || !*socketPath) return;
+    std::string path(socketPath);
+    sockaddr_un addr {};
+    if (path.size() >= sizeof(addr.sun_path)) return;
+    addr.sun_family = AF_UNIX;
+    std::memcpy(addr.sun_path, path.data(), path.size());
+    if (addr.sun_path[0] == '@') addr.sun_path[0] = '\0';  // abstract namespace
+    const int fd = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+    static const char kReady[] = "READY=1";
+    ::sendto(fd, kReady, sizeof(kReady) - 1, 0, reinterpret_cast<sockaddr*>(&addr),
+             static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size()));
+    ::close(fd);
 }
 #endif
 
@@ -404,6 +430,17 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+
+#ifdef __linux__
+    // Ready once the receivers are listening and the first frame is on screen.
+    if (auto* quickWindow = window.engine()->rootObjects().isEmpty() ? nullptr
+            : qobject_cast<QQuickWindow*>(window.engine()->rootObjects().first())) {
+        QObject::connect(quickWindow, &QQuickWindow::frameSwapped, &app,
+                         &notifySystemdReady, Qt::SingleShotConnection);
+    } else {
+        notifySystemdReady();
+    }
+#endif
 
     int result = app.exec();
     webInterface.stop();
