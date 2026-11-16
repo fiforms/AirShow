@@ -138,7 +138,7 @@ dpkg-buildpackage -us -uc -b                # writes ../airshow_*.deb
 
 ### Kiosk and signage integration
 
-AirShow doesn't manage the rest of the display, but your own scripts can react when someone starts or stops casting. For example, they can hide a fullscreen browser while a session is on screen. `--on-session-start` and `--on-session-end` run a shell command, with the sender's name and protocol in the environment. Under systemd, a `Type=notify` unit reports ready once AirShow's window is on screen. [docs/session-hooks.md](docs/session-hooks.md) gives the details and a worked example for labwc and Chromium. The Debian package installs it as `/usr/share/doc/airshow/session-hooks.md`.
+AirShow doesn't manage the rest of the display, but your own scripts can react when someone starts or stops casting. For example, they can hide a fullscreen browser while a session is on screen. `--on-session-start` and `--on-session-end` run a shell command, with the sender's name and protocol in the environment. Under systemd, a `Type=notify` unit reports ready once AirShow's window is on screen. `--approval known-only` admits only senders approved before (no prompt), and `--quit-keys` exits on a given key, e.g. a remote control button. [docs/session-hooks.md](docs/session-hooks.md) gives the details and a worked example for labwc and Chromium. The Debian package installs it as `/usr/share/doc/airshow/session-hooks.md`.
 
 ### macOS (Homebrew)
 

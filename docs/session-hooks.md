@@ -6,12 +6,16 @@ For example, it can hide a fullscreen browser during a session. AirShow
 doesn't manage anything else on the display. It only runs your commands and
 reports when it's ready.
 
-It provides three things for this:
+It provides these things for this:
 
 - [Session hooks](#session-hooks): `--on-session-start` and `--on-session-end`
 - [Readiness notification](#readiness-systemd-typenotify) for systemd
   `Type=notify` units
 - [A fixed window identity](#window-identity) for compositor window rules
+- [Control over who may cast](#who-may-cast): `--approval`, and
+  `--list-remembered` / `--forget-remembered`
+- [Quit keys](#leaving-airshow-with-a-key): `--quit-keys`, to leave AirShow
+  with a remote control button
 
 ## Session hooks
 
@@ -92,6 +96,84 @@ With labwc, for example, you could use a window rule to keep AirShow below
 other windows instead of stopping the browser. Check your labwc version's
 documentation for the actions it supports.
 
+## Who may cast
+
+New senders get an Allow/Deny prompt, and approved senders are remembered:
+their next connection starts without one. `--approval` chooses, for one run,
+what happens to senders that aren't remembered:
+
+| `--approval` | Senders that aren't remembered |
+|---|---|
+| `prompt` | Asked with the approval prompt; remembered if allowed |
+| `known-only` | Rejected without a prompt (logged as `SecurityManager: rejecting ...`) |
+| not given | The `requireApproval` setting decides (prompt by default) |
+
+With `known-only` no prompt appears, so no `start` hook runs for a rejected
+sender: the screen stays with whatever the kiosk shows. A remembered sender
+starts a session as usual.
+
+Remembered senders are listed and forgotten from the command line, without a
+display and while AirShow runs. They act on the settings of the user who runs
+them, so for a kiosk unit run them as that user:
+
+```bash
+airshow --list-remembered
+airshow --forget-remembered "Jane's iPhone"   # by device name or identifier
+airshow --forget-remembered all
+sudo runuser -u kiosk -- airshow --list-remembered
+```
+
+`--list-remembered` prints one sender per line: its identifier, then its name
+and protocol as they were when it was approved (empty for senders remembered
+by older versions).
+
+## Leaving AirShow with a key
+
+`--quit-keys` makes AirShow exit (status 0, as on `SIGTERM`) when one of the
+given keys is pressed while its window has focus. A kiosk can use it to leave
+an AirShow mode with a remote control button:
+
+```bash
+airshow --approval prompt --quit-keys 172,158
+```
+
+Keys are Linux key codes, as `evtest` shows them, or Qt key names (`Escape`,
+`F11`, `HomePage`), separated by commas. On a common 2.4 GHz remote that acts
+as a USB keyboard, Home is `172` (`KEY_HOMEPAGE`) and Back is `158`
+(`KEY_BACK`). Remotes like these often have a mouse mode too, in which their
+OK button is a mouse click instead of a key.
+
+- Don't use the approval prompt's keys (Enter, Return, Esc, Space, the arrow
+  keys, Tab, Y, N): a quit key quits even while the prompt is open.
+- Avoid the Power key (`116`): systemd-logind or the kiosk may already act on
+  it.
+- Linux key codes are matched on Linux only; key names work everywhere.
+
+### Two kiosk modes
+
+Together these allow a kiosk with an attended AirShow mode and an unattended
+background mode, sharing the same remembered senders:
+
+- **AirShow mode**, opened from the kiosk's menu: AirShow is shown full
+  screen, new senders get the approval prompt (answered with the remote), and
+  a remote button returns to the kiosk:
+
+  ```bash
+  airshow --approval prompt --quit-keys 172,158
+  ```
+
+  The kiosk starts the mode, and switches back when AirShow exits.
+
+- **Background mode**, while the kiosk shows its own content: AirShow runs
+  behind it, admits only remembered senders, and the session hooks bring it
+  to the front while one is casting:
+
+  ```bash
+  airshow --approval known-only \
+          --on-session-start 'my-kiosk show-airshow' \
+          --on-session-end 'my-kiosk show-browser'
+  ```
+
 ## Example: hide a kiosk browser while casting
 
 This example is not installed by the package. Adapt it to your own setup. It
@@ -148,11 +230,18 @@ your own script, which can read `AIRSHOW_SESSION`, `AIRSHOW_DEVICE` and
 
 ## Raspberry Pi notes
 
-- The Raspberry Pi 5 has no H.264 hardware decoder, so AirShow decodes on the
-  CPU (`avdec_h264`). 1080p works, but keep the Pi cool.
+- AirShow decodes H.264 on the CPU (`avdec_h264`). The Raspberry Pi 5 has no
+  H.264 hardware decoder, and the Pi 4's (V4L2) is slower here, because every
+  frame is copied to the screen on the CPU. A Pi 4 can't keep up with 1080p
+  Miracast, so on ARM boards AirShow offers Miracast senders at most 720p
+  (`maxResolution` under `[miracast]` in the settings file changes it).
 - Miracast discovery from Windows (Win+K) uses `wpa_supplicant`'s Wi-Fi
-  Direct support, which can disturb the Pi's Wi-Fi connection. If you don't
-  need it, pass `--no-beacon`. See *Miracast discovery (Linux)* in the main
-  README.
+  Direct support. The Pi's single radio leaves your network's channel while
+  it listens for Wi-Fi Direct scans (200 ms of every 2 s, paused while
+  someone is casting). If you don't need Win+K or Android Miracast, pass
+  `--no-beacon`. See *Miracast discovery (Linux)* in the main README.
+- Turn Wi-Fi power saving off on a kiosk that is always plugged in: with it
+  on, streams arrive in bursts with lost packets. See *Android (Wi-Fi
+  Direct)* in the main README.
 - Audio goes to the session's default output, which is PipeWire on Raspberry
   Pi OS.

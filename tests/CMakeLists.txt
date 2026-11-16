@@ -283,3 +283,12 @@ target_include_directories(test_session_hooks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 find_package(Qt6 REQUIRED COMPONENTS Test)
 target_link_libraries(test_session_hooks PRIVATE GTest::gtest GTest::gmock Qt6::Core Qt6::Test)
 gtest_discover_tests(test_session_hooks TEST_SUFFIX "" PROPERTIES TIMEOUT 30)
+
+# QuitKeys — --quit-keys parsing and matching
+add_executable(test_quit_keys
+  test_quit_keys.cpp
+  ${CMAKE_SOURCE_DIR}/src/ui/QuitKeys.cpp
+)
+target_include_directories(test_quit_keys PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_quit_keys PRIVATE GTest::gtest_main Qt6::Core Qt6::Gui)
+gtest_discover_tests(test_quit_keys TEST_SUFFIX "" PROPERTIES TIMEOUT 30)

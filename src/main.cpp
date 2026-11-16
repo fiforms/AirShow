@@ -8,6 +8,7 @@
 #include <QNetworkInterface>
 #include <QTimer>
 #include <QTextStream>
+#include <optional>
 #include <gst/gst.h>
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
@@ -15,6 +16,7 @@
 #include "ui/SessionHooks.h"
 #include "settings/AppSettings.h"
 #include "settings/RememberedDevices.h"
+#include "ui/QuitKeys.h"
 #include "security/SecurityManager.h"
 #include "discovery/DiscoveryManager.h"
 #include "discovery/UpnpAdvertiser.h"
@@ -267,6 +269,21 @@ int main(int argc, char* argv[]) {
                        "and on exit if a session is still active."),
         QStringLiteral("command"));
     parser.addOption(sessionEndOption);
+    const QCommandLineOption quitKeysOption(
+        QStringList{QStringLiteral("quit-keys")},
+        QStringLiteral("Exit when one of these keys is pressed (while AirShow's window has "
+                       "focus), e.g. to leave a kiosk's AirShow mode with a remote control "
+                       "button. Linux key codes as evtest shows them (172 = Home, 158 = Back "
+                       "on many remotes) or Qt key names (Escape, F11), separated by commas."),
+        QStringLiteral("keys"));
+    parser.addOption(quitKeysOption);
+    const QCommandLineOption approvalOption(
+        QStringList{QStringLiteral("approval")},
+        QStringLiteral("How to handle devices that aren't remembered, for this run: 'prompt' "
+                       "asks (and remembers approved devices), 'known-only' rejects them "
+                       "without asking. Default: the requireApproval setting decides."),
+        QStringLiteral("prompt|known-only"));
+    parser.addOption(approvalOption);
     // Handled at the top of main(); listed here for --help
     parser.addOption(QCommandLineOption(
         QStringList{QStringLiteral("list-remembered")},
@@ -279,6 +296,29 @@ int main(int argc, char* argv[]) {
         QStringLiteral("device|all")));
     parser.process(app);
 
+    std::optional<airshow::SecurityManager::ApprovalMode> approvalMode;
+    if (parser.isSet(approvalOption)) {
+        const QString mode = parser.value(approvalOption);
+        if (mode == QLatin1String("prompt")) {
+            approvalMode = airshow::SecurityManager::ApprovalMode::Prompt;
+        } else if (mode == QLatin1String("known-only")) {
+            approvalMode = airshow::SecurityManager::ApprovalMode::KnownOnly;
+        } else {
+            qCritical("--approval: '%s' is not 'prompt' or 'known-only'", qPrintable(mode));
+            return 2;
+        }
+    }
+    if (parser.isSet(quitKeysOption)) {
+        QList<airshow::QuitKeys::Key> keys;
+        QString error;
+        if (!airshow::QuitKeys::parse(parser.value(quitKeysOption), keys, error)) {
+            qCritical("--quit-keys: %s", qPrintable(error));
+            return 2;
+        }
+        app.installEventFilter(new airshow::QuitKeys(keys, &app));
+        qInfo("Quit keys: %s", qPrintable(parser.value(quitKeysOption)));
+    }
+
 #ifndef _WIN32
     quitOnSignals(app);
 #endif
@@ -288,6 +328,11 @@ int main(int argc, char* argv[]) {
     // Phase 7: SecurityManager — must outlive all protocol handlers.
     // Constructed after AppSettings (dependency injection) and before any handler.
     airshow::SecurityManager securityManager(settings);
+    if (approvalMode) {
+        securityManager.setApprovalMode(*approvalMode);
+        qInfo("Approval: %s", *approvalMode == airshow::SecurityManager::ApprovalMode::KnownOnly
+                                  ? "known devices only" : "prompt for new devices");
+    }
 
     // Windows firewall rules — first launch only (D-12/D-13/D-14)
     if (settings.isFirstLaunch()) {

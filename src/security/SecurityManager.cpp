@@ -126,16 +126,31 @@ bool SecurityManager::isTrusted(const QString& deviceIdentifier) const {
 // Blocks on QSemaphore until the user responds or the timeout expires.
 // ---------------------------------------------------------------------------
 
+std::optional<bool> SecurityManager::decideWithoutPrompt(const QString& deviceName,
+                                                         const QString& protocol,
+                                                         const QString& deviceIdentifier) const {
+    // Approval disabled (and not overridden for this run) — allow all local connections
+    if (m_approvalMode == ApprovalMode::Settings && !m_settings.requireApproval()) {
+        return true;
+    }
+    // Already trusted — skip prompt
+    if (isTrusted(deviceIdentifier)) {
+        return true;
+    }
+    if (m_approvalMode == ApprovalMode::KnownOnly) {
+        qInfo("SecurityManager: rejecting '%s' (%s, %s): not a remembered device "
+              "(--approval known-only)", qPrintable(deviceName), qPrintable(protocol),
+              qPrintable(deviceIdentifier));
+        return false;
+    }
+    return std::nullopt;
+}
+
 bool SecurityManager::checkConnection(const QString& deviceName,
                                       const QString& protocol,
                                       const QString& deviceIdentifier) {
-    // Fast path 1: approval disabled — allow all local connections
-    if (!m_settings.requireApproval()) {
-        return true;
-    }
-    // Fast path 2: already trusted — skip prompt
-    if (isTrusted(deviceIdentifier)) {
-        return true;
+    if (const auto decided = decideWithoutPrompt(deviceName, protocol, deviceIdentifier)) {
+        return *decided;
     }
 
     // Slow path: create per-request struct and emit requestApproval on Qt thread
@@ -175,12 +190,8 @@ void SecurityManager::checkConnectionAsync(const QString& deviceName,
                                            const QString& protocol,
                                            const QString& deviceIdentifier,
                                            std::function<void(bool)> callback) {
-    if (!m_settings.requireApproval()) {
-        if (callback) callback(true);
-        return;
-    }
-    if (isTrusted(deviceIdentifier)) {
-        if (callback) callback(true);
+    if (const auto decided = decideWithoutPrompt(deviceName, protocol, deviceIdentifier)) {
+        if (callback) callback(*decided);
         return;
     }
 

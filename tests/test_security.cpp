@@ -485,3 +485,40 @@ TEST_F(SecurityManagerCheckTest, ApprovalStoresDeviceName) {
     EXPECT_EQ(settings->trustedDeviceName("miracast:749678"), "Daniel's Laptop");
     EXPECT_EQ(settings->trustedDeviceProtocol("miracast:749678"), "Miracast");
 }
+
+// --approval known-only: remembered devices are admitted, others rejected
+// without a prompt (no requestApproval, so no session hook runs)
+TEST_F(SecurityManagerCheckTest, KnownOnlyRejectsUnknownWithoutPrompt) {
+    settings->setRequireApproval(false);  // overridden by the mode
+    manager->setApprovalMode(airshow::SecurityManager::ApprovalMode::KnownOnly);
+    settings->addTrustedDevice("miracast:known", "Laptop", "Miracast");
+    int prompts = 0;
+    QObject::connect(manager.get(), &airshow::SecurityManager::requestApproval,
+                     manager.get(), [&](const QString&, const QString&, const QString&) {
+                         ++prompts;
+                     }, Qt::DirectConnection);
+
+    int result = -1;
+    manager->checkConnectionAsync("Laptop", "Miracast", "miracast:known",
+                                  [&](bool ok) { result = ok; });
+    EXPECT_EQ(result, 1);
+    manager->checkConnectionAsync("Stranger", "Miracast", "miracast:other",
+                                  [&](bool ok) { result = ok; });
+    EXPECT_EQ(result, 0);
+    EXPECT_FALSE(manager->checkConnection("Stranger", "DLNA", "10.0.0.9"));
+    EXPECT_TRUE(manager->checkConnection("Laptop", "Miracast", "miracast:known"));
+    EXPECT_EQ(prompts, 0);
+}
+
+// --approval prompt asks even when the requireApproval setting is off
+TEST_F(SecurityManagerCheckTest, PromptModeOverridesSetting) {
+    settings->setRequireApproval(false);
+    manager->setApprovalMode(airshow::SecurityManager::ApprovalMode::Prompt);
+    int prompts = 0;
+    QObject::connect(manager.get(), &airshow::SecurityManager::requestApproval,
+                     manager.get(), [&](const QString&, const QString&, const QString&) {
+                         ++prompts;
+                     }, Qt::DirectConnection);
+    manager->checkConnectionAsync("Phone", "Miracast", "wifi-direct:aa", [](bool) {});
+    EXPECT_EQ(prompts, 1);
+}

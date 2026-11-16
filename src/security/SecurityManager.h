@@ -7,6 +7,7 @@
 #include <QSemaphore>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace airshow {
 
@@ -47,6 +48,15 @@ class SecurityManager : public QObject {
 
 public:
     explicit SecurityManager(AppSettings& settings, QObject* parent = nullptr);
+
+    // How new devices are handled, for this run (airshow --approval):
+    //   Settings  — the "security/requireApproval" setting decides (default)
+    //   Prompt    — always ask about devices that aren't remembered
+    //   KnownOnly — admit remembered devices, reject all others without asking
+    //               (no prompt, so no session hook runs for them)
+    enum class ApprovalMode { Settings, Prompt, KnownOnly };
+    void setApprovalMode(ApprovalMode mode) { m_approvalMode = mode; }
+    ApprovalMode approvalMode() const { return m_approvalMode; }
 
     // --- Synchronous approval (blocks calling thread) ----------------------
     //
@@ -127,6 +137,13 @@ private:
 
     AppSettings& m_settings;
     int          m_approvalTimeoutMs{15000};
+    ApprovalMode m_approvalMode{ApprovalMode::Settings};
+
+    // Fast paths shared by both checks: true/false if decided without a
+    // prompt, nullopt if the user has to be asked
+    std::optional<bool> decideWithoutPrompt(const QString& deviceName,
+                                            const QString& protocol,
+                                            const QString& deviceIdentifier) const;
 
     // Both maps are Qt-thread-only (accessed only inside invokeMethod lambdas
     // and resolveApproval). The semaphore in each ApprovalRequest acts as the

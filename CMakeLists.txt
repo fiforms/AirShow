@@ -136,6 +136,7 @@ qt_add_executable(airshow
   src/ui/AudioBridge.cpp
   src/ui/ConnectionBridge.cpp
   src/ui/SessionHooks.cpp
+  src/ui/QuitKeys.cpp
   src/ui/SettingsBridge.cpp
   src/ui/VideoFrameSink.cpp
   src/protocol/ProtocolManager.cpp
