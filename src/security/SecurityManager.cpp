@@ -186,7 +186,8 @@ void SecurityManager::checkConnectionAsync(const QString& deviceName,
 
     // Prompt required — store callback and emit signal
     QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    m_asyncCallbacks[requestId] = std::move(callback);
+    m_asyncCallbacks[requestId] =
+        AsyncRequest{std::move(callback), deviceIdentifier, deviceName, protocol};
     emit requestApproval(requestId, deviceName, protocol);
 }
 
@@ -205,7 +206,7 @@ void SecurityManager::resolveApproval(const QString& requestId, bool approved) {
         m_pendingRequests.erase(syncIt);
         req->approved = approved;
         if (approved && !req->deviceIdentifier.isEmpty()) {
-            m_settings.addTrustedDevice(req->deviceIdentifier);
+            m_settings.addTrustedDevice(req->deviceIdentifier, req->deviceName, req->protocol);
         }
         req->semaphore.release(1);  // Unblocks the protocol callback thread
         return;
@@ -214,13 +215,12 @@ void SecurityManager::resolveApproval(const QString& requestId, bool approved) {
     // Handle async pending request
     auto asyncIt = m_asyncCallbacks.find(requestId);
     if (asyncIt != m_asyncCallbacks.end()) {
-        auto cb = asyncIt.value();
+        const AsyncRequest req = asyncIt.value();
         m_asyncCallbacks.erase(asyncIt);
-        if (approved) {
-            // Identifier not stored for async path here — callers pass it upstream
-            // (CastHandler will store the UUID before calling checkConnectionAsync)
+        if (approved && !req.deviceIdentifier.isEmpty()) {
+            m_settings.addTrustedDevice(req.deviceIdentifier, req.deviceName, req.protocol);
         }
-        if (cb) cb(approved);
+        if (req.callback) req.callback(approved);
     }
 }
 

@@ -7,12 +7,14 @@
 #include <QStandardPaths>
 #include <QNetworkInterface>
 #include <QTimer>
+#include <QTextStream>
 #include <gst/gst.h>
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
 #include "ui/ConnectionBridge.h"
 #include "ui/SessionHooks.h"
 #include "settings/AppSettings.h"
+#include "settings/RememberedDevices.h"
 #include "security/SecurityManager.h"
 #include "discovery/DiscoveryManager.h"
 #include "discovery/UpnpAdvertiser.h"
@@ -214,6 +216,22 @@ static void notifySystemdReady() {
 #endif
 
 int main(int argc, char* argv[]) {
+    // --list-remembered / --forget-remembered: settings only, so they run
+    // before GStreamer or a display is needed (works over SSH)
+    {
+        QStringList args;
+        for (int i = 1; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        if (airshow::isRememberedDevicesCommand(args)) {
+            QCoreApplication::setOrganizationName("AirShow");
+            QCoreApplication::setApplicationName("AirShow");
+            QCoreApplication app(argc, argv);
+            airshow::AppSettings settings;
+            QTextStream out(stdout);
+            QTextStream err(stderr);
+            return airshow::runRememberedDevicesCommand(args, settings, out, err);
+        }
+    }
+
     useBundledGStreamer();
     gst_init(&argc, &argv);
     checkRequiredPlugins();
@@ -249,6 +267,16 @@ int main(int argc, char* argv[]) {
                        "and on exit if a session is still active."),
         QStringLiteral("command"));
     parser.addOption(sessionEndOption);
+    // Handled at the top of main(); listed here for --help
+    parser.addOption(QCommandLineOption(
+        QStringList{QStringLiteral("list-remembered")},
+        QStringLiteral("List the devices remembered after approval (admitted without the "
+                       "approval prompt), then exit.")));
+    parser.addOption(QCommandLineOption(
+        QStringList{QStringLiteral("forget-remembered")},
+        QStringLiteral("Forget a remembered device, by identifier or device name (as "
+                       "--list-remembered shows), or all of them, then exit."),
+        QStringLiteral("device|all")));
     parser.process(app);
 
 #ifndef _WIN32
@@ -429,7 +457,7 @@ int main(int argc, char* argv[]) {
         discovery.setWifiDirectSourceHandler(
             [miracast](const airshow::WifiDirectSource& source) {
                 miracast->connectWifiDirectSource(source.name, QHostAddress(source.address),
-                                                  source.rtspPort);
+                                                  source.rtspPort, source.deviceAddress);
             });
         protocolManager.addHandler(std::move(miracastHandler));
         // NOTE: addHandler() calls handler->setMediaPipeline(m_pipeline) internally.

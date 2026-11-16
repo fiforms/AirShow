@@ -275,7 +275,8 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
         QPointer<MiracastHandler> self(this);
         QPointer<QTcpSocket>      client(m_miceClient);
         m_securityManager->checkConnectionAsync(
-            m_sourceName, QStringLiteral("Miracast"), m_sourceAddr.toString(),
+            m_sourceName, QStringLiteral("Miracast"),
+            approvalIdentifier(m_sourceId, {}, m_sourceAddr),
             [self, client](bool approved) {
                 if (!self || !client || client != self->m_miceClient ||
                     self->m_state != State::WaitingSourceReady) {
@@ -296,8 +297,18 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
     }
 }
 
+// static
+QString MiracastHandler::approvalIdentifier(const QString& miceSourceId,
+                                            const QString& wifiDirectDeviceAddress,
+                                            const QHostAddress& address) {
+    if (!miceSourceId.isEmpty()) return QStringLiteral("miracast:") + miceSourceId;
+    if (!wifiDirectDeviceAddress.isEmpty())
+        return QStringLiteral("wifi-direct:") + wifiDirectDeviceAddress.toLower();
+    return address.toString();
+}
+
 void MiracastHandler::connectWifiDirectSource(const QString& name, const QHostAddress& address,
-                                              uint16_t rtspPort) {
+                                              uint16_t rtspPort, const QString& deviceAddress) {
     if (!m_running) return;
     qDebug("MiracastHandler: Wi-Fi Direct source '%s' at %s:%u",
            qPrintable(name), qPrintable(address.toString()), static_cast<unsigned>(rtspPort));
@@ -321,6 +332,7 @@ void MiracastHandler::connectWifiDirectSource(const QString& name, const QHostAd
     m_sourceAddr = address;
     m_sourceName = name;
     m_sourceId.clear();
+    m_sourceDeviceAddress = deviceAddress;
     m_rtspPort   = rtspPort > 0 ? rtspPort : kRtspPort;
     m_state      = State::WaitingSourceReady;
     const quint64 token = ++m_approvalToken;
@@ -336,7 +348,8 @@ void MiracastHandler::connectWifiDirectSource(const QString& name, const QHostAd
     }
     QPointer<MiracastHandler> self(this);
     m_securityManager->checkConnectionAsync(
-        m_sourceName, QStringLiteral("Miracast"), m_sourceAddr.toString(),
+        m_sourceName, QStringLiteral("Miracast"),
+        approvalIdentifier({}, m_sourceDeviceAddress, m_sourceAddr),
         [self, token](bool approved) {
             if (!self || token != self->m_approvalToken ||
                 self->m_state != State::WaitingSourceReady) {
@@ -834,6 +847,7 @@ void MiracastHandler::teardown() {
     m_miceBuffer.clear();
     m_sourceName.clear();
     m_sourceId.clear();
+    m_sourceDeviceAddress.clear();
     m_presentationUrl.clear();
     m_sessionId.clear();
     m_m2Cseq = m_setupCseq = m_playCseq = -1;

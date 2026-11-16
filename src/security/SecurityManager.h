@@ -70,7 +70,8 @@ public:
     // For Cast which runs entirely on the Qt main thread (RESEARCH.md Pitfall 1).
     // Fast-path logic is the same; if a prompt is needed, stores callback keyed
     // by requestId and emits requestApproval. resolveApproval() invokes the
-    // callback on the Qt thread.
+    // callback on the Qt thread, and if approved adds deviceIdentifier (when
+    // not empty) to the trusted list, like the sync variant.
     void checkConnectionAsync(const QString& deviceName,
                               const QString& protocol,
                               const QString& deviceIdentifier,
@@ -131,7 +132,13 @@ private:
     // and resolveApproval). The semaphore in each ApprovalRequest acts as the
     // cross-thread synchronization primitive.
     QHash<QString, std::shared_ptr<ApprovalRequest>>  m_pendingRequests;
-    QHash<QString, std::function<void(bool)>>          m_asyncCallbacks;
+    struct AsyncRequest {
+        std::function<void(bool)> callback;
+        QString                   deviceIdentifier;  // trusted if approved
+        QString                   deviceName;        // stored with it, for listing
+        QString                   protocol;
+    };
+    QHash<QString, AsyncRequest>                       m_asyncCallbacks;
 };
 
 } // namespace airshow

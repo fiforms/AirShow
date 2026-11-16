@@ -226,7 +226,15 @@ qml/
 
 AirShow includes three security layers:
 
-1. **Device Approval** --- new devices trigger an Allow/Deny dialog before mirroring starts. Approved devices are remembered. The dialog works without a mouse (kiosks, remote controls that act as keyboards): Enter picks the highlighted button (Allow at first), the arrow keys and Tab switch, Esc denies.
+1. **Device Approval** --- new devices trigger an Allow/Deny dialog before mirroring starts. The dialog works without a mouse (kiosks, remote controls that act as keyboards): Enter picks the highlighted button (Allow at first), the arrow keys and Tab switch, Esc denies. Approved devices are remembered: AirPlay devices by their device ID, Windows (Miracast) by its source ID, Android phones (Miracast) by their Wi-Fi Direct device address (phones that randomize it are asked again after it changes), Google Cast and DLNA senders by IP address. These identifiers are not proof of identity: a device on your network that copies one is admitted too. To see or forget remembered devices (no display needed, also while AirShow runs):
+
+   ```bash
+   airshow --list-remembered
+   airshow --forget-remembered "Daniel's Laptop"   # by device name or identifier
+   airshow --forget-remembered all
+   ```
+
+   They act on the settings of the user who runs them. For a kiosk unit running as another user, run them as that user, e.g. `sudo runuser -u kiosk -- airshow --list-remembered`.
 2. **PIN Pairing** --- optional 4-digit PIN displayed on the receiver. Devices must enter the correct PIN to connect.
 3. **LAN-Only Filter** --- connections from non-RFC1918 IPs are rejected. VPN interfaces are excluded from listener binding.
 

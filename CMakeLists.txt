@@ -152,6 +152,7 @@ qt_add_executable(airshow
   src/protocol/AirShowHandler.cpp
   ${CAST_PROTO_SRCS}
   src/settings/AppSettings.cpp
+  src/settings/RememberedDevices.cpp
   src/security/SecurityManager.cpp
   src/discovery/ServiceAdvertiser.cpp
   src/discovery/AvahiAdvertiser.cpp

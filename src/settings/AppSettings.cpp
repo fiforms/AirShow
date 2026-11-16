@@ -1,6 +1,7 @@
 #include "settings/AppSettings.h"
 #include <QSettings>
 #include <QSysInfo>
+#include <QUrl>
 
 namespace airshow {
 
@@ -125,14 +126,37 @@ QStringList AppSettings::trustedDevices() const {
     return s.value(QStringLiteral("security/trustedDevices"), QStringList()).toStringList();
 }
 
-void AppSettings::addTrustedDevice(const QString& deviceId) {
+namespace {
+// Identifiers contain ':' and may contain '/', which QSettings treats as a
+// group separator: store names under a percent-encoded key
+QString trustedNameKey(const QString& deviceId) {
+    return QStringLiteral("security/trustedDeviceNames/") +
+           QString::fromLatin1(QUrl::toPercentEncoding(deviceId));
+}
+} // namespace
+
+void AppSettings::addTrustedDevice(const QString& deviceId, const QString& deviceName,
+                                   const QString& protocol) {
     QSettings s;
     QStringList list = s.value(QStringLiteral("security/trustedDevices"), QStringList()).toStringList();
     if (!list.contains(deviceId)) {
         list.append(deviceId);
         s.setValue(QStringLiteral("security/trustedDevices"), list);
-        s.sync();
     }
+    if (!deviceName.isEmpty() || !protocol.isEmpty()) {
+        s.setValue(trustedNameKey(deviceId), QStringList{deviceName, protocol});
+    }
+    s.sync();
+}
+
+QString AppSettings::trustedDeviceName(const QString& deviceId) const {
+    QSettings s;
+    return s.value(trustedNameKey(deviceId)).toStringList().value(0);
+}
+
+QString AppSettings::trustedDeviceProtocol(const QString& deviceId) const {
+    QSettings s;
+    return s.value(trustedNameKey(deviceId)).toStringList().value(1);
 }
 
 void AppSettings::removeTrustedDevice(const QString& deviceId) {
@@ -140,13 +164,15 @@ void AppSettings::removeTrustedDevice(const QString& deviceId) {
     QStringList list = s.value(QStringLiteral("security/trustedDevices"), QStringList()).toStringList();
     if (list.removeAll(deviceId) > 0) {
         s.setValue(QStringLiteral("security/trustedDevices"), list);
-        s.sync();
     }
+    s.remove(trustedNameKey(deviceId));
+    s.sync();
 }
 
 void AppSettings::clearTrustedDevices() {
     QSettings s;
     s.setValue(QStringLiteral("security/trustedDevices"), QStringList());
+    s.remove(QStringLiteral("security/trustedDeviceNames"));
     s.sync();
 }
 

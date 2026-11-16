@@ -76,8 +76,17 @@ public:
     // Start a session with a source that joined over Wi-Fi Direct (Android;
     // see WifiDirectBeacon) instead of MS-MICE: after approval, connects to its
     // RTSP server at address:rtspPort. Same single-session rules as MS-MICE.
+    // deviceAddress (P2P Device Address) identifies the source for remembering
+    // its approval; the IP address is reused by every source (192.168.49.x).
     void        connectWifiDirectSource(const QString& name, const QHostAddress& address,
-                                        uint16_t rtspPort);
+                                        uint16_t rtspPort, const QString& deviceAddress = {});
+
+    // Identifier under which a source's approval is remembered (SecurityManager
+    // trusted devices): the MS-MICE Source ID (stable per Windows device), the
+    // Wi-Fi Direct device address, else the IP address. Public for tests.
+    static QString approvalIdentifier(const QString& miceSourceId,
+                                      const QString& wifiDirectDeviceAddress,
+                                      const QHostAddress& address);
 
     // WFD M3 capability response body (public so tests can verify exact format).
     // Source: lazycast d2.py (verified against WFD spec v2.1 field definitions).
@@ -214,6 +223,7 @@ private:
     // an approval prompt for an earlier source is ignored
     quint64           m_approvalToken  = 0;
     QString           m_sourceId;                   // SourceID TLV from SOURCE_READY
+    QString           m_sourceDeviceAddress;        // Wi-Fi Direct device address
     int               m_udpPort        = kDefaultRtpPort; // negotiated RTP receive port
     void*             m_qmlVideoItem   = nullptr;   // stored for initMiracastPipeline()
     bool              m_limitTo720p    = false;     // see setLimitTo720p()

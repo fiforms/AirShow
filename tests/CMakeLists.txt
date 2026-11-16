@@ -257,6 +257,7 @@ add_executable(test_security
   test_security.cpp
   ${CMAKE_SOURCE_DIR}/src/security/SecurityManager.cpp
   ${CMAKE_SOURCE_DIR}/src/settings/AppSettings.cpp
+  ${CMAKE_SOURCE_DIR}/src/settings/RememberedDevices.cpp
 )
 
 target_include_directories(test_security PRIVATE

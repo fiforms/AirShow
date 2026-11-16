@@ -15,8 +15,9 @@ namespace airshow {
 // session. address is the source's IPv4 address on the group.
 struct WifiDirectSource {
     QString  name;
-    QString  address;
+    QString  address;        // IPv4 address on the group
     uint16_t rtspPort = 7236;
+    QString  deviceAddress;  // P2P Device Address (MAC), identifies the source
 };
 
 // Makes the receiver show up in Windows "Connect" (Win+K) as a Miracast over

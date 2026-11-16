@@ -352,3 +352,136 @@ int main(int argc, char** argv) {
     ::testing::AddGlobalTestEnvironment(new SecurityTestEnvironment);
     return RUN_ALL_TESTS();
 }
+
+// Asynchronous approval (Cast, Miracast) remembers approved devices like the
+// sync path: approving adds the identifier to the trusted list, so the next
+// connection from the same device is admitted without a prompt.
+TEST_F(SecurityManagerCheckTest, AsyncApprovalIsRemembered) {
+    settings->setRequireApproval(true);
+    QString requestId;
+    int prompts = 0;
+    QObject::connect(manager.get(), &airshow::SecurityManager::requestApproval,
+                     manager.get(), [&](const QString& id, const QString&, const QString&) {
+                         requestId = id;
+                         ++prompts;
+                     }, Qt::DirectConnection);
+
+    int result = -1;
+    manager->checkConnectionAsync("Laptop", "Miracast", "miracast:abc123",
+                                  [&](bool approved) { result = approved; });
+    ASSERT_EQ(prompts, 1);
+    manager->resolveApproval(requestId, true);
+    EXPECT_EQ(result, 1);
+    EXPECT_TRUE(settings->trustedDevices().contains("miracast:abc123"));
+
+    // Second connection: admitted at once, no prompt
+    result = -1;
+    manager->checkConnectionAsync("Laptop", "Miracast", "miracast:abc123",
+                                  [&](bool approved) { result = approved; });
+    EXPECT_EQ(prompts, 1);
+    EXPECT_EQ(result, 1);
+}
+
+TEST_F(SecurityManagerCheckTest, AsyncDenialIsNotRemembered) {
+    settings->setRequireApproval(true);
+    QString requestId;
+    QObject::connect(manager.get(), &airshow::SecurityManager::requestApproval,
+                     manager.get(), [&](const QString& id, const QString&, const QString&) {
+                         requestId = id;
+                     }, Qt::DirectConnection);
+    int result = -1;
+    manager->checkConnectionAsync("Phone", "Miracast", "wifi-direct:9e:73:b1:55:c1:57",
+                                  [&](bool approved) { result = approved; });
+    manager->resolveApproval(requestId, false);
+    EXPECT_EQ(result, 0);
+    EXPECT_TRUE(settings->trustedDevices().isEmpty());
+}
+
+// ---------------------------------------------------------------------------
+// airshow --list-remembered / --forget-remembered
+// ---------------------------------------------------------------------------
+#include "settings/RememberedDevices.h"
+#include <QTextStream>
+
+class RememberedDevicesTest : public ::testing::Test {
+protected:
+    void SetUp() override { clearTestSettings(); }
+    void TearDown() override { clearTestSettings(); }
+
+    int run(const QStringList& args) {
+        out.clear();
+        err.clear();
+        QTextStream o(&out), e(&err);
+        const int rc = airshow::runRememberedDevicesCommand(args, settings, o, e);
+        o.flush();
+        e.flush();
+        return rc;
+    }
+
+    airshow::AppSettings settings;
+    QString out, err;
+};
+
+TEST_F(RememberedDevicesTest, RecognizesCommands) {
+    using airshow::isRememberedDevicesCommand;
+    EXPECT_TRUE(isRememberedDevicesCommand({"--list-remembered"}));
+    EXPECT_TRUE(isRememberedDevicesCommand({"--forget-remembered", "all"}));
+    EXPECT_TRUE(isRememberedDevicesCommand({"--forget-remembered=all"}));
+    EXPECT_FALSE(isRememberedDevicesCommand({"--no-beacon"}));
+    EXPECT_FALSE(isRememberedDevicesCommand({}));
+}
+
+TEST_F(RememberedDevicesTest, ListsWithNames) {
+    EXPECT_EQ(run({"--list-remembered"}), 0);
+    EXPECT_EQ(out, "No remembered devices.\n");
+
+    settings.addTrustedDevice("miracast:abc", "Laptop", "Miracast");
+    settings.addTrustedDevice("192.168.1.5");  // older entry: no name
+    EXPECT_EQ(run({"--list-remembered"}), 0);
+    EXPECT_EQ(out, "miracast:abc  Laptop (Miracast)\n192.168.1.5\n");
+}
+
+TEST_F(RememberedDevicesTest, ForgetsByIdentifierOrName) {
+    settings.addTrustedDevice("miracast:abc", "Laptop", "Miracast");
+    settings.addTrustedDevice("wifi-direct:9e:73:b1:55:c1:57", "Phone", "Miracast");
+    settings.addTrustedDevice("AA:BB:CC:DD:EE:FF", "Phone", "AirPlay");
+
+    EXPECT_EQ(run({"--forget-remembered", "miracast:abc"}), 0);
+    EXPECT_EQ(out, "Forgot Laptop (Miracast): miracast:abc\n");
+    EXPECT_FALSE(settings.trustedDevices().contains("miracast:abc"));
+    EXPECT_TRUE(settings.trustedDeviceName("miracast:abc").isEmpty());
+
+    // A name forgets every device with it (case-insensitive)
+    EXPECT_EQ(run({"--forget-remembered=phone"}), 0);
+    EXPECT_TRUE(settings.trustedDevices().isEmpty());
+}
+
+TEST_F(RememberedDevicesTest, ForgetAllAndErrors) {
+    settings.addTrustedDevice("a", "A", "DLNA");
+    settings.addTrustedDevice("b");
+    EXPECT_EQ(run({"--forget-remembered", "nope"}), 1);
+    EXPECT_TRUE(err.contains("No remembered device 'nope'"));
+    EXPECT_EQ(settings.trustedDevices().size(), 2);
+
+    EXPECT_EQ(run({"--forget-remembered"}), 2);  // missing argument
+
+    EXPECT_EQ(run({"--forget-remembered", "all"}), 0);
+    EXPECT_EQ(out, "Forgot 2 devices.\n");
+    EXPECT_TRUE(settings.trustedDevices().isEmpty());
+    EXPECT_TRUE(settings.trustedDeviceName("a").isEmpty());
+}
+
+// Approving through the prompt stores the device's name and protocol for listing
+TEST_F(SecurityManagerCheckTest, ApprovalStoresDeviceName) {
+    settings->setRequireApproval(true);
+    QString requestId;
+    QObject::connect(manager.get(), &airshow::SecurityManager::requestApproval,
+                     manager.get(), [&](const QString& id, const QString&, const QString&) {
+                         requestId = id;
+                     }, Qt::DirectConnection);
+    manager->checkConnectionAsync("Daniel's Laptop", "Miracast", "miracast:749678",
+                                  [](bool) {});
+    manager->resolveApproval(requestId, true);
+    EXPECT_EQ(settings->trustedDeviceName("miracast:749678"), "Daniel's Laptop");
+    EXPECT_EQ(settings->trustedDeviceProtocol("miracast:749678"), "Miracast");
+}

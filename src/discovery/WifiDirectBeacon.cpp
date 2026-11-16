@@ -614,7 +614,7 @@ struct WifiDirectBeacon::Impl : QObject {
         }
         pendingPeer   = peer;
         pendingSince  = std::chrono::steady_clock::now();
-        pendingSource = WifiDirectSource{name, QString(), port ? port : kWfdRtspPort};
+        pendingSource = WifiDirectSource{name, QString(), port ? port : kWfdRtspPort, mac};
 
         GError* err = nullptr;
         std::string via;
