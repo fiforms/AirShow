@@ -1113,6 +1113,18 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     // Drop the oldest audio instead.
     g_object_set(audioQueue, "leaky", 2, nullptr);
 
+    // Play audio as it arrives, like the video (createVideoSink realtime) and
+    // the AirPlay audio sink. With clock sync, sources stamp audio ahead (seen:
+    // ~1 s, Windows 11 and Samsung Smart View), so it played that far behind
+    // the picture and the audio queue sat full, dropping audio.
+    // autoaudiosink creates the real sink as a child: set it there.
+    g_signal_connect(audioSink, "element-added",
+        G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
+            if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
+                g_object_set(child, "sync", FALSE, nullptr);
+            }
+        }), nullptr);
+
     // Add all elements to the pipeline bin before linking
     gst_bin_add_many(GST_BIN(pipeline),
         udpsrc, jitterbuf, rtpmp2tdepay, tsparse, tsdemux,
