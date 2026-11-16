@@ -145,7 +145,12 @@ bool DiscoveryManager::start() {
         {"container_id", QString::fromStdString(getOrCreateUuid("miracast/container_id"))
                              .toUpper().toStdString()},
     };
-    m_advertiser->advertise("_display._tcp", name, kMiracastPort, miracastTxt);
+    // " (network)": GNOME Network Displays lists this next to the Wi-Fi Direct
+    // sink (named after the P2P device, as Windows and Android show it); the
+    // suffix tells the two apart. Windows doesn't show this name: it finds the
+    // record through the host name in the beacon.
+    m_advertiser->advertise("_display._tcp", name, kMiracastPort, miracastTxt,
+                            " (network)");
     // Windows only lists MS-MICE sinks it has seen over Wi-Fi Direct; the mDNS
     // record above is how it then finds our address. Logs why if unavailable.
     if (m_wifiDirectEnabled) {

@@ -30,7 +30,8 @@ public:
     bool advertise(const std::string& serviceType,
                    const std::string& name,
                    uint16_t port,
-                   const std::vector<TxtRecord>& txt) override;
+                   const std::vector<TxtRecord>& txt,
+                   const std::string& nameSuffix = {}) override;
     bool rename(const std::string& newName) override;
     void stop() override;
     bool updateTxtRecord(const std::string& serviceType,

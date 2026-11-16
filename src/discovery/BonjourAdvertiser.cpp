@@ -71,12 +71,13 @@ BonjourAdvertiser::~BonjourAdvertiser() {
 bool BonjourAdvertiser::advertise(const std::string& serviceType,
                                    const std::string& name,
                                    uint16_t port,
-                                   const std::vector<TxtRecord>& txt) {
+                                   const std::vector<TxtRecord>& txt,
+                                   const std::string& nameSuffix) {
     if (!m_available) return false;
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    m_services.push_back({serviceType, name, port, txt, nullptr});
+    m_services.push_back({serviceType, name + nameSuffix, port, txt, nullptr, nameSuffix});
     if (m_activeName.empty()) m_activeName = name;
 
     return registerService(m_services.back());
@@ -88,7 +89,7 @@ bool BonjourAdvertiser::rename(const std::string& newName) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_activeName = newName;
     for (auto& svc : m_services) {
-        svc.name = newName;
+        svc.name = newName + svc.nameSuffix;
     }
     reregisterAll();
     return true;

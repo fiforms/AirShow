@@ -282,3 +282,26 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+// A per-service name suffix is part of the instance name and survives rename()
+// (GNOME Network Displays lists the MS-MICE record next to the Wi-Fi Direct
+// sink; " (network)" tells them apart).
+TEST_F(MdnsResponderTest, NameSuffixKeptAcrossRename) {
+    ASSERT_TRUE(responder->advertise("_airshowtest._tcp", "Box", 7400, {}, " (network)"));
+    auto reply = askUntilAnswered(port, question(kTestType, dns::kPtr, 0x1111));
+    ASSERT_TRUE(reply.has_value());
+    const dns::Record* ptr = find(reply->answers, dns::kPtr);
+    ASSERT_NE(ptr, nullptr);
+    EXPECT_EQ(ptr->target.front(), "Box (network)");
+
+    responder->rename("Lobby");
+    // The new name is announced after probing: ask until it shows up
+    std::string seen;
+    for (int i = 0; i < 40 && seen != "Lobby (network)"; ++i) {
+        reply = ask(port, question(kTestType, dns::kPtr, 0x2222), 250);
+        if (reply) {
+            if (const dns::Record* p = find(reply->answers, dns::kPtr)) seen = p->target.front();
+        }
+    }
+    EXPECT_EQ(seen, "Lobby (network)");
+}
