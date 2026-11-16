@@ -142,7 +142,7 @@ jobs:
         run: |
           case "$VERSION" in
             v*) debver="${VERSION#v}" ;;
-            *)  debver="0.0.0+git${GITHUB_SHA::8}" ;;
+            *)  debver="0.0.0+git$(printf '%.8s' "$GITHUB_SHA")" ;;
           esac
           dch --newversion "$debver" --distribution unstable -b "Automated build."
 
