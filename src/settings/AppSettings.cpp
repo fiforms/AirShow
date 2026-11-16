@@ -52,6 +52,12 @@ void AppSettings::setWifiDirectBeacon(bool v) {
     s.sync();
 }
 
+QString AppSettings::miracastMaxResolution() const {
+    QSettings s;
+    return s.value(QStringLiteral("miracast/maxResolution"), QStringLiteral("auto"))
+        .toString().trimmed().toLower();
+}
+
 // ---------------------------------------------------------------------------
 // Security settings (Phase 7 / D-11)
 // ---------------------------------------------------------------------------

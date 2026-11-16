@@ -20,6 +20,7 @@
 #include "protocol/CastHandler.h"
 #include "protocol/DlnaHandler.h"
 #include "protocol/MiracastHandler.h"
+#include "discovery/WifiDirectBeacon.h"
 #include "protocol/AirShowHandler.h"
 #include "protocol/ProtocolManager.h"
 #include "web/WebInterface.h"
@@ -379,11 +380,36 @@ int main(int argc, char* argv[]) {
             window.connectionBridge());
         // Phase 7: Wire SecurityManager for connection approval + RFC1918 filter
         miracastHandler->setSecurityManager(&securityManager);
+        // Offered video resolution: software H.264 decode on a small ARM CPU
+        // (Raspberry Pi) falls behind at 1080p, so "auto" offers 720p there
+        {
+            const QString maxRes = settings.miracastMaxResolution();
+            bool limit720 = maxRes == QLatin1String("720");
+            if (maxRes == QLatin1String("auto")) {
+#if defined(Q_PROCESSOR_ARM)
+                limit720 = !gst_registry_check_feature_version(
+                    gst_registry_get(), "vaapidecodebin", 1, 20, 0);
+#endif
+            } else if (maxRes != QLatin1String("720") && maxRes != QLatin1String("1080")) {
+                qWarning("Unknown miracast/maxResolution '%s' — using 1080",
+                         qPrintable(maxRes));
+            }
+            miracastHandler->setLimitTo720p(limit720);
+            qInfo("Miracast: offering video up to %s", limit720 ? "720p30" : "1080p60");
+        }
         // QML video item pointer: nullptr here — the real pointer is stored in
         // MediaPipeline::m_qmlVideoItem (set by ReceiverWindow after sceneGraphInitialized).
         // MiracastHandler passes m_qmlVideoItem to initMiracastPipeline() at session time.
         // Same deferred-pointer pattern as pipeline.setQmlVideoItem(nullptr) above.
         miracastHandler->setQmlVideoItem(nullptr);
+        // Android sources join over Wi-Fi Direct; the beacon hands them over
+        // once the group is up (WifiDirectBeacon)
+        airshow::MiracastHandler* miracast = miracastHandler.get();
+        discovery.setWifiDirectSourceHandler(
+            [miracast](const airshow::WifiDirectSource& source) {
+                miracast->connectWifiDirectSource(source.name, QHostAddress(source.address),
+                                                  source.rtspPort);
+            });
         protocolManager.addHandler(std::move(miracastHandler));
         // NOTE: addHandler() calls handler->setMediaPipeline(m_pipeline) internally.
     }
@@ -446,6 +472,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     int result = app.exec();
+    discovery.setWifiDirectSourceHandler(nullptr);  // the handler goes with protocolManager
     webInterface.stop();
     protocolManager.stopAll();
     discovery.stop();

@@ -1,0 +1,12 @@
+# AirShow: turn off Wi-Fi power saving on Wi-Fi Direct (P2P) group interfaces.
+#
+# Android sources (Samsung Smart View / DeX, ...) stream Miracast video over a
+# Wi-Fi Direct group. With power saving on, the adapter dozes between beacons
+# and the stream arrives in bursts with lost packets: the picture tears and the
+# source reports an unstable connection (seen on a Raspberry Pi 4, brcmfmac:
+# 27 Mbit/s with power saving, 58 Mbit/s without).
+#
+# Only p2p-* interfaces are affected. wpa_supplicant creates them for a group
+# and removes them when it ends, so the station connection, and battery life
+# while not casting, are unchanged.
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="p2p-*", ENV{DEVTYPE}=="wlan", RUN+="/usr/sbin/iw dev $name set power_save off"

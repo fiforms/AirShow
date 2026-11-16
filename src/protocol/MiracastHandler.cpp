@@ -152,6 +152,7 @@ void MiracastHandler::onMiceConnection() {
     m_sourceAddr = peer;
     m_miceClient = socket;
     m_miceBuffer.clear();
+    ++m_approvalToken;  // replaces a Wi-Fi Direct source awaiting approval
     connect(m_miceClient, &QTcpSocket::readyRead,
             this, &MiracastHandler::onMiceData);
 
@@ -268,6 +269,71 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
         // No security manager — connect directly (backward compatible)
         connectToSource();
     }
+}
+
+void MiracastHandler::connectWifiDirectSource(const QString& name, const QHostAddress& address,
+                                              uint16_t rtspPort) {
+    if (!m_running) return;
+    qDebug("MiracastHandler: Wi-Fi Direct source '%s' at %s:%u",
+           qPrintable(name), qPrintable(address.toString()), static_cast<unsigned>(rtspPort));
+
+    // Single-session model, as for MS-MICE (onMiceConnection)
+    const bool sessionActive = m_state != State::Idle && m_state != State::WaitingSourceReady;
+    if (sessionActive) {
+        if (!address.isEqual(m_sourceAddr, QHostAddress::ConvertV4MappedToIPv4)) {
+            qWarning("MiracastHandler: busy with %s — ignoring Wi-Fi Direct source %s",
+                     qPrintable(m_sourceAddr.toString()), qPrintable(address.toString()));
+            return;
+        }
+        qDebug("MiracastHandler: source reconnected over Wi-Fi Direct — restarting the session");
+        teardown();
+    }
+    if (m_miceClient) {
+        // An MS-MICE connection still awaiting approval: replaced
+        closeGracefully(m_miceClient, this);
+    }
+
+    m_sourceAddr = address;
+    m_sourceName = name;
+    m_sourceId.clear();
+    m_rtspPort   = rtspPort > 0 ? rtspPort : kRtspPort;
+    m_state      = State::WaitingSourceReady;
+    const quint64 token = ++m_approvalToken;
+
+    if (m_securityManager && !SecurityManager::isLocalNetwork(m_sourceAddr)) {
+        qWarning("MiracastHandler: rejecting non-local source %s",
+                 qPrintable(m_sourceAddr.toString()));
+        return;
+    }
+    if (!m_securityManager) {
+        connectToSource();
+        return;
+    }
+    QPointer<MiracastHandler> self(this);
+    m_securityManager->checkConnectionAsync(
+        m_sourceName, QStringLiteral("Miracast"), m_sourceAddr.toString(),
+        [self, token](bool approved) {
+            if (!self || token != self->m_approvalToken ||
+                self->m_state != State::WaitingSourceReady) {
+                qDebug("MiracastHandler: ignoring approval for a source that is gone");
+                return;
+            }
+            if (!approved) {
+                // The source gives up on its own and ends the group
+                qDebug("MiracastHandler: Wi-Fi Direct source denied by security manager");
+                return;
+            }
+            self->connectToSource();
+        });
+}
+
+// static
+QByteArray MiracastHandler::wfdCapabilityResponse(bool limitTo720p) {
+    QByteArray resp(kWfdCapabilityResponse);
+    if (!limitTo720p) return resp;
+    // Replace the first line (wfd_video_formats)
+    const qsizetype end = resp.indexOf("\r\n") + 2;
+    return QByteArray(kWfdVideoFormats720p) + resp.mid(end);
 }
 
 // static
@@ -437,7 +503,7 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
             qDebug("Miracast: keepalive GET_PARAMETER acknowledged");
         } else {
             // M3: capability query
-            const QString capResp = QString::fromUtf8(kWfdCapabilityResponse);
+            const QString capResp = QString::fromUtf8(wfdCapabilityResponse(m_limitTo720p));
             m_rtspSocket->write(buildRtspResponse(msg.cseq, 200, capResp).toUtf8());
             m_state = State::NegotiatingM4;
             qDebug("Miracast: sent M3 capability response");
@@ -556,6 +622,7 @@ void MiracastHandler::handleRtspResponse(const RtspMessage& msg) {
         m_state = State::Streaming;
         m_lastStreamErrors = 0;
         m_healthTicks = 0;
+        m_statsFrames = 0;
         m_idrInterval = 1;
         m_nextIdrTick = 1;
         m_healthTimer.start();
@@ -594,6 +661,16 @@ void MiracastHandler::checkStreamHealth() {
     const uint64_t frames = m_pipeline->miracastFramesDecoded();
     const uint64_t errors = m_pipeline->miracastStreamErrors();
     ++m_healthTicks;
+
+    // Throughput for diagnostics (stalls, slow decode)
+    if (m_healthTicks % kStatsIntervalSec == 0) {
+        qDebug("Miracast: %llu frames decoded (%.1f fps over %d s), %llu stream errors",
+               static_cast<unsigned long long>(frames),
+               double(frames - m_statsFrames) / kStatsIntervalSec, kStatsIntervalSec,
+               static_cast<unsigned long long>(errors));
+        m_statsFrames = frames;
+        qDebug("Miracast: buffered: %s", m_pipeline->miracastBufferReport().c_str());
+    }
 
     if (frames == 0) {
         // Nothing decoded yet: the first IDR may have been lost. Ask again with

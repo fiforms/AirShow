@@ -257,6 +257,9 @@ if(UNIX AND NOT APPLE)
   install(FILES resources/icons/airshow.png
           DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/512x512/apps)
   install(FILES docs/session-hooks.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/airshow)
+  # Wi-Fi power saving off on Wi-Fi Direct group interfaces (Android Miracast)
+  install(FILES packaging/linux/60-airshow-wifi-direct.rules
+          DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/udev/rules.d)
 endif()
 
 # Tests (need GoogleTest; packagers can pass -DBUILD_TESTING=OFF)

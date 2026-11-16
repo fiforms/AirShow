@@ -41,6 +41,13 @@ public:
     bool wifiDirectBeacon() const;
     void setWifiDirectBeacon(bool v);
 
+    // Highest video resolution offered to Miracast sources: "1080" (up to
+    // 1080p60), "720" (up to 720p30), or "auto" (default): 720 on ARM boards
+    // without VA-API hardware decode (e.g. Raspberry Pi), whose software
+    // decoder can't keep up with 1080p, else 1080.
+    // Key: "miracast/maxResolution"
+    QString miracastMaxResolution() const;
+
     // --- Security settings (Phase 7 / D-11) ------------------------------
 
     // Whether incoming connections require explicit user approval (default: true).

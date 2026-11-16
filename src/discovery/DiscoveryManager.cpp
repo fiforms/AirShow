@@ -44,6 +44,11 @@ DiscoveryManager::~DiscoveryManager() {
     stop();
 }
 
+void DiscoveryManager::setWifiDirectSourceHandler(
+        std::function<void(const WifiDirectSource&)> handler) {
+    m_wifiDirect->setSourceHandler(std::move(handler));
+}
+
 bool DiscoveryManager::start() {
     if (!m_advertiser) {
         g_warning("DiscoveryManager: no ServiceAdvertiser available on this platform");

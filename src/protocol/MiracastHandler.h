@@ -73,6 +73,12 @@ public:
     // Same pattern as MediaPipeline::setQmlVideoItem() used by Cast.
     void        setQmlVideoItem(void* item);
 
+    // Start a session with a source that joined over Wi-Fi Direct (Android;
+    // see WifiDirectBeacon) instead of MS-MICE: after approval, connects to its
+    // RTSP server at address:rtspPort. Same single-session rules as MS-MICE.
+    void        connectWifiDirectSource(const QString& name, const QHostAddress& address,
+                                        uint16_t rtspPort);
+
     // WFD M3 capability response body (public so tests can verify exact format).
     // Source: lazycast d2.py (verified against WFD spec v2.1 field definitions).
     // IMPORTANT: wfd_content_protection MUST be "none" — see RESEARCH.md Pitfall 6.
@@ -88,6 +94,23 @@ public:
         "wfd_content_protection: none\r\n"
         "wfd_display_edid: none\r\n"
         "wfd_connector_type: 05\r\n";
+
+    // wfd_video_formats line limited to 720p30: CEA modes up to 1280x720p30
+    // (bits 0-5, 10 = 720p25, 15 = 720p24: 0x843F) and VESA modes up to
+    // 1366x768 at 30 Hz (bits 0, 2, ..., 12: 0x1555). Less than half the pixel
+    // rate of 1080p30, for receivers that decode in software on a small CPU.
+    static constexpr const char* kWfdVideoFormats720p =
+        "wfd_video_formats: "
+        "00 00 02 10 "
+        "0000843F 00001555 00000FFF "
+        "00 0000 0000 00 none none\r\n";
+
+    // The M3 capability response, with the video formats limited to 720p30 when
+    // limitTo720p (see setLimitTo720p), else kWfdCapabilityResponse.
+    static QByteArray wfdCapabilityResponse(bool limitTo720p);
+
+    // Advertise at most 720p30 to sources (M3), instead of up to 1080p60
+    void setLimitTo720p(bool limit) { m_limitTo720p = limit; }
 
     // Build a RTSP/1.0 response string for a given CSeq, status code, and optional body.
     // Made public static for unit testing without friend declarations
@@ -181,10 +204,14 @@ private:
     int               m_cseq           = 1;        // RTSP CSeq counter
     uint16_t          m_rtspPort       = kRtspPort; // RTSP port from SOURCE_READY
     QString           m_sourceName;                 // Friendly name from SOURCE_READY
-    QHostAddress      m_sourceAddr;                 // IP of the Windows source
+    QHostAddress      m_sourceAddr;                 // IP of the source
+    // Bumped whenever a new source replaces the pending one, so the answer to
+    // an approval prompt for an earlier source is ignored
+    quint64           m_approvalToken  = 0;
     QString           m_sourceId;                   // SourceID TLV from SOURCE_READY
     int               m_udpPort        = kDefaultRtpPort; // negotiated RTP receive port
     void*             m_qmlVideoItem   = nullptr;   // stored for initMiracastPipeline()
+    bool              m_limitTo720p    = false;     // see setLimitTo720p()
 
     QString           m_presentationUrl;            // wfd_presentation_URL from M4
     QString           m_sessionId;                  // Session id from the M6 SETUP response
@@ -197,6 +224,8 @@ private:
     static constexpr int kMaxIdrIntervalSec = 16;
     static constexpr int kNoVideoWarnSec    = 10;
     int               m_healthTicks    = 0;
+    static constexpr int kStatsIntervalSec = 5;
+    uint64_t          m_statsFrames    = 0;        // frames at the last stats log
     int               m_idrInterval    = 1;
     int               m_nextIdrTick    = 1;
 

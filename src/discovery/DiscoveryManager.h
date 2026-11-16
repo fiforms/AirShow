@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -7,6 +8,7 @@ namespace airshow {
 class ServiceAdvertiser;
 class AppSettings;
 class WifiDirectBeacon;
+struct WifiDirectSource;
 
 // Owns the ServiceAdvertiser backend and registers these service records:
 //   _airplay._tcp    (DISC-01)
@@ -26,6 +28,10 @@ public:
     // receiver in Windows Connect (Win+K). Default: true. main.cpp sets it from
     // AppSettings::wifiDirectBeacon() and the --no-beacon switch. Call before start().
     void setWifiDirectBeaconEnabled(bool enabled) { m_wifiDirectEnabled = enabled; }
+
+    // Called when a source (Android) has joined over Wi-Fi Direct and waits
+    // for the sink to start the Miracast RTSP session. See WifiDirectBeacon.
+    void setWifiDirectSourceHandler(std::function<void(const WifiDirectSource&)> handler);
 
     // Start all service advertisements. Returns false if advertiser unavailable.
     bool start();

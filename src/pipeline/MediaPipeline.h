@@ -130,6 +130,10 @@ public:
     uint64_t miracastFramesDecoded() const { return m_miracastFrames.load(); }
     uint64_t miracastStreamErrors() const  { return m_miracastErrors.load(); }
 
+    // One-line summary of how much is buffered in the Miracast pipeline (jitter
+    // buffer, queues), for diagnosing latency. Empty if no pipeline.
+    std::string miracastBufferReport() const;
+
     // White-box accessor for tests — allows gst_element_get_state on the miracast pipeline.
     GstElement* miracastPipeline() const { return m_miracastPipeline; }
 

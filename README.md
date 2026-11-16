@@ -12,7 +12,7 @@ A free, open-source, cross-platform screen mirroring receiver. Turn any computer
 |----------|---------------|--------|
 | **AirPlay** | iPhone, iPad, Mac | Working (needs device testing) |
 | **Google Cast** | Chrome browser (desktop) | Implemented (Cast Streaming receiver), needs device testing |
-| **Miracast** | Windows 10/11 | Working on Linux receivers (tested with Windows 11); see [Miracast discovery](#miracast-discovery-linux) |
+| **Miracast** | Windows 10/11, Android (Samsung Smart View / DeX and other Wi-Fi Direct sources) | Working on Linux receivers (tested with Windows 11, and a Samsung Galaxy S23 Ultra to a Raspberry Pi 4); see [Miracast discovery](#miracast-discovery-linux) and [Android](#android-wi-fi-direct) |
 | **DLNA** | Any DLNA controller app | Working (needs device testing) |
 
 ## Features
@@ -70,7 +70,36 @@ At startup AirShow logs either `WifiDirectBeacon: discoverable in Windows Connec
   wifiDirectBeacon=false
   ```
 
-With the beacon off, AirShow does not touch wpa_supplicant, and won't appear in Win+K. AirPlay, Cast and DLNA are unaffected.
+With the beacon off, AirShow does not touch wpa_supplicant, won't appear in Win+K, and doesn't accept Android connections. AirPlay, Cast and DLNA are unaffected.
+
+### Android (Wi-Fi Direct)
+
+Android phones that still offer Miracast (Samsung Smart View and DeX, and "Screen mirroring" on several other brands; not Pixels, which only offer Google Cast) don't use the network you're on. They form a Wi-Fi Direct link with the receiver and stream over it. On Linux, with the beacon on (above), AirShow shows up in the phone's list under its receiver name and accepts these connections:
+
+1. The phone asks to connect. AirShow offers push-button pairing, so there is no PIN to type. A phone that insists on PIN pairing is turned away.
+2. AirShow accepts. The phone becomes the Wi-Fi Direct group owner and hands out the addresses (the phone is `192.168.49.1`).
+3. AirShow shows the usual approval prompt, then connects to the phone and the mirroring starts.
+
+It needs the same Wi-Fi adapter support and `netdev` permission as Win+K discovery, and also:
+
+- **NetworkManager** (the default on Debian, Ubuntu and Raspberry Pi OS) has to create the link, because it removes Wi-Fi Direct links it didn't create itself. AirShow asks it for a temporary connection that is never saved. This needs NetworkManager's permission to control the network, which an active local session has by default (a desktop login, or a kiosk unit with `PAMName=login`), and Debian's rule for `netdev` members in such a session. Without NetworkManager, AirShow connects through wpa_supplicant directly, but something else has to set up the link's address.
+- The Wi-Fi Direct link shares the adapter with your normal connection. On a Raspberry Pi 4 both run side by side on the built-in Wi-Fi.
+
+**Wi-Fi power saving** makes the stream arrive in bursts with lost packets: the picture tears and the phone reports an unstable connection. The Debian package installs a udev rule (`/usr/lib/udev/rules.d/60-airshow-wifi-direct.rules`, needs `iw`) that turns power saving off on Wi-Fi Direct links only, so it costs no battery while nobody is casting. On a kiosk that is always plugged in, also turn it off for the normal connection. With NetworkManager, put this in `/etc/NetworkManager/conf.d/90-wifi-powersave-off.conf`:
+
+```ini
+[connection]
+wifi.powersave = 2
+```
+
+**Resolution.** A Raspberry Pi decodes Miracast video in software, and can't keep up with 1080p: frames back up and the picture falls seconds behind. On ARM boards without VA-API hardware decoding, AirShow therefore offers sources at most 720p30 (a phone screen still looks sharp on a TV). To choose yourself, set `maxResolution` to `720` or `1080` (default `auto`):
+
+```ini
+[miracast]
+maxResolution=1080
+```
+
+**What others can do.** Like with a TV, anyone in Wi-Fi range can start a Wi-Fi Direct connection to the receiver; whether mirroring starts is then up to the approval prompt (or PIN). The Wi-Fi Direct link only reaches this computer, not your network. One phone can be connected at a time.
 
 ## Build from source
 
@@ -188,7 +217,7 @@ qml/
 | AirPlay | UxPlay (embedded) |
 | DLNA | libupnp (pupnp) |
 | Google Cast | protobuf + OpenSSL (TLS, AES-CTR) + Cast Streaming over UDP |
-| Miracast | MS-MICE (TCP/RTSP) |
+| Miracast | MS-MICE (TCP/RTSP), Wi-Fi Direct (WFD RTSP) via wpa_supplicant / NetworkManager D-Bus |
 | Discovery | Avahi (Linux), Bonjour (macOS, Windows if installed), built-in mDNS responder otherwise |
 | Build | CMake + Ninja |
 | Crypto | OpenSSL 3.x / 4.x |
@@ -197,7 +226,7 @@ qml/
 
 AirShow includes three security layers:
 
-1. **Device Approval** --- new devices trigger an Allow/Deny dialog before mirroring starts. Approved devices are remembered.
+1. **Device Approval** --- new devices trigger an Allow/Deny dialog before mirroring starts. Approved devices are remembered. The dialog works without a mouse (kiosks, remote controls that act as keyboards): Enter picks the highlighted button (Allow at first), the arrow keys and Tab switch, Esc denies.
 2. **PIN Pairing** --- optional 4-digit PIN displayed on the receiver. Devices must enter the correct PIN to connect.
 3. **LAN-Only Filter** --- connections from non-RFC1918 IPs are rejected. VPN interfaces are excluded from listener binding.
 
@@ -205,8 +234,8 @@ AirShow includes three security layers:
 
 - **Google Cast authentication** uses precomputed RSA signatures from AirReceiver (via shanocast). They cover through ~2027-12-21 and cannot be regenerated; Google may also revoke them at any time. Android "Cast screen" is not expected to work with these credentials.
 - **Google Cast media** uses AirShow's own Cast Streaming receiver (`src/cast/CastStreamingReceiver`): RTP + AES-128-CTR + RTCP feedback, VP8/VP9/H.264 video and Opus audio. Not yet verified against a real Chrome sender.
-- **Miracast** streams over the existing network (MS-MICE). Wi-Fi Direct is used only so Windows can discover the receiver (Linux only, on by default, `--no-beacon` turns it off; see [Miracast discovery](#miracast-discovery-linux)); Wi-Fi Direct streaming is not supported. On macOS and Windows receivers, AirShow does not appear in Win+K.
-- **Android Miracast** support varies by OEM. Most Android devices use Wi-Fi Direct only and won't connect via MS-MICE.
+- **Miracast** from Windows streams over the existing network (MS-MICE); from Android it streams over Wi-Fi Direct. Both need the Wi-Fi Direct beacon (Linux only, on by default, `--no-beacon` turns it off; see [Miracast discovery](#miracast-discovery-linux)). On macOS and Windows receivers, AirShow does not appear in Win+K and doesn't accept Android connections.
+- **Android Miracast** support varies by OEM: tested with Samsung Smart View. Only push-button pairing is supported; AirShow has to be the Wi-Fi Direct client (the phone the group owner), which is what phones choose. Video is decoded in software on a Raspberry Pi (its V4L2 hardware decoder is slower here, because AirShow copies every frame on the CPU), which limits it to 720p.
 - **HDCP content** (Netflix, Disney+, etc.) is blocked at the protocol level by DRM --- this is not a bug.
 
 ## Testing
