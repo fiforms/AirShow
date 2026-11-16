@@ -22,18 +22,35 @@ namespace {
 // nullptr. disconnectFromHost() + an immediate deleteLater() would discard the
 // write buffer, losing e.g. the TEARDOWN request and the 200 OK to the
 // source's TEARDOWN. Deleted after at most 3 s if the peer never reads.
-void closeGracefully(QTcpSocket*& socket, QObject* owner) {
+//
+// Whatever the peer still sends is read and discarded: closing a socket with
+// unread data makes the kernel answer with a reset instead of a normal close,
+// which Windows' projection stack handles badly (it sends STOP_PROJECTION and
+// the RTSP TEARDOWN response while we close). With waitForPeerMs > 0 the peer
+// gets that long to close first (MS-MICE: the source ends the connection).
+void closeGracefully(QTcpSocket*& socket, QObject* owner, int waitForPeerMs = 0) {
     QTcpSocket* s = socket;
     socket = nullptr;
     if (!s) return;
     s->disconnect(owner);
+    QObject::connect(s, &QIODevice::readyRead, s, [s] { s->readAll(); });
     QObject::connect(s, &QAbstractSocket::disconnected, s, &QObject::deleteLater);
-    QTimer::singleShot(3000, s, &QObject::deleteLater);
+    QTimer::singleShot(waitForPeerMs + 3000, s, &QObject::deleteLater);
+    s->readAll();
+    if (waitForPeerMs > 0 && s->state() == QAbstractSocket::ConnectedState) {
+        QTimer::singleShot(waitForPeerMs, s, [s] { s->disconnectFromHost(); });
+        return;
+    }
     s->disconnectFromHost();
     if (s->state() == QAbstractSocket::UnconnectedState) {
         s->deleteLater();
     }
 }
+
+// How long to wait for the source's answer to our TEARDOWN (M8), and for an
+// MS-MICE source to close its connection, before closing ourselves
+constexpr int kTeardownResponseMs = 2000;
+constexpr int kMiceCloseWaitMs    = 5000;
 } // namespace
 
 // ── MiracastHandler ──────────────────────────────────────────────────────────
@@ -45,6 +62,14 @@ MiracastHandler::MiracastHandler(ConnectionBridge* connectionBridge, QObject* pa
 {
     m_healthTimer.setInterval(1000);
     connect(&m_healthTimer, &QTimer::timeout, this, &MiracastHandler::checkStreamHealth);
+    m_teardownTimer.setSingleShot(true);
+    m_teardownTimer.setInterval(kTeardownResponseMs);
+    connect(&m_teardownTimer, &QTimer::timeout, this, [this] {
+        if (m_state == State::TearingDown) {
+            qDebug("Miracast: no answer to TEARDOWN — closing");
+            teardown();
+        }
+    });
 }
 
 MiracastHandler::~MiracastHandler() {
@@ -540,9 +565,13 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
                 sendRtspRequest(QStringLiteral("PAUSE"), streamUri(),
                                 QStringLiteral("Session: %1\r\n").arg(m_sessionId));
             } else if (method == QStringLiteral("TEARDOWN")) {
-                sendRtspRequest(QStringLiteral("TEARDOWN"), streamUri(),
-                                QStringLiteral("Session: %1\r\n").arg(m_sessionId));
-                teardown();
+                // M8: the session ends once the source answers (or closes, or
+                // after kTeardownResponseMs). The picture goes away now.
+                m_teardownCseq = sendRtspRequest(QStringLiteral("TEARDOWN"), streamUri(),
+                                    QStringLiteral("Session: %1\r\n").arg(m_sessionId));
+                stopMedia();
+                m_state = State::TearingDown;
+                m_teardownTimer.start();
             }
         } else if (url.isEmpty()) {
             qDebug("Miracast: SET_PARAMETER acknowledged:\n%s", msg.body.constData());
@@ -564,6 +593,11 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
 }
 
 void MiracastHandler::handleRtspResponse(const RtspMessage& msg) {
+    if (msg.cseq == m_teardownCseq && m_state == State::TearingDown) {
+        qDebug("Miracast: TEARDOWN answered (%d) — closing", msg.statusCode);
+        teardown();
+        return;
+    }
     if (msg.cseq == m_m2Cseq) {
         if (msg.statusCode == 200) {
             m_state = State::NegotiatingM3;
@@ -747,7 +781,7 @@ QString MiracastHandler::parseSessionId(const QString& sessionHeader) {
 
 void MiracastHandler::onRtspDisconnected() {
     qDebug("MiracastHandler: RTSP socket disconnected (state=%d)", static_cast<int>(m_state));
-    if (m_state == State::Streaming) {
+    if (m_state == State::Streaming || m_state == State::TearingDown) {
         teardown();
     } else {
         // Clean up and reset to waiting for next connection
@@ -769,25 +803,31 @@ void MiracastHandler::onRtspDisconnected() {
 
 // ── Helper methods ─────────────────────────────────────────────────────────────
 
-void MiracastHandler::teardown() {
-    m_state = State::TearingDown;
+void MiracastHandler::stopMedia() {
     m_healthTimer.stop();
-    qDebug("Miracast: session ended");
-
     if (m_pipeline) {
         m_pipeline->stopMiracast();
     }
-
     if (m_connectionBridge) {
         m_connectionBridge->setConnected(false);
     }
+}
+
+void MiracastHandler::teardown() {
+    m_state = State::TearingDown;
+    m_teardownTimer.stop();
+    m_teardownCseq = -1;
+    qDebug("Miracast: session ended");
+
+    stopMedia();
 
     if (m_rtspSocket) {
         closeGracefully(m_rtspSocket, this);
     }
 
     if (m_miceClient) {
-        closeGracefully(m_miceClient, this);
+        // The source ends MS-MICE (STOP_PROJECTION, then closes): let it
+        closeGracefully(m_miceClient, this, kMiceCloseWaitMs);
     }
 
     m_rtspBuffer.clear();

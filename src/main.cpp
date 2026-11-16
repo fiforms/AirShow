@@ -6,6 +6,7 @@
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QNetworkInterface>
+#include <QTimer>
 #include <gst/gst.h>
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
@@ -320,10 +321,23 @@ int main(int argc, char* argv[]) {
         QStringLiteral("securityManager"), &securityManager);
 
     // While a sender is on screen, keep the radio on the network's channel: the
-    // Wi-Fi Direct beacon's listening would cost the stream packets
+    // Wi-Fi Direct beacon's listening would cost the stream packets. Resume a
+    // few seconds after the session ends, so the sender's last messages (e.g.
+    // Windows' teardown) aren't lost to it either.
+    QTimer resumeListenTimer;
+    resumeListenTimer.setSingleShot(true);
+    resumeListenTimer.setInterval(5000);
+    QObject::connect(&resumeListenTimer, &QTimer::timeout, [&discovery] {
+        discovery.setWifiDirectListenPaused(false);
+    });
     QObject::connect(window.connectionBridge(), &airshow::ConnectionBridge::connectedChanged,
-                     [&discovery](bool connected) {
-                         discovery.setWifiDirectListenPaused(connected);
+                     [&discovery, &resumeListenTimer](bool connected) {
+                         if (connected) {
+                             resumeListenTimer.stop();
+                             discovery.setWifiDirectListenPaused(true);
+                         } else {
+                             resumeListenTimer.start();
+                         }
                      });
 
     // --on-session-start / --on-session-end (e.g. hide a kiosk browser while casting)

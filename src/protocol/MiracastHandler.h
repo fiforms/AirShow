@@ -171,6 +171,9 @@ private:
     int  sendRtspRequest(const QString& method, const QString& uri,
                          const QString& extraHeaders = {}, const QString& body = {});
     void teardown();
+    // Stops the media pipeline and clears the on-screen session (part of
+    // teardown, done early while waiting for the source to answer TEARDOWN)
+    void stopMedia();
 
     // Parse one complete RTSP message from m_rtspBuffer.
     // Returns true and fills out/body/cseq/method/statusCode if a complete message
@@ -221,6 +224,8 @@ private:
     int               m_setupCseq      = -1;        // CSeq of our M6 SETUP
     int               m_playCseq       = -1;        // CSeq of our M7 PLAY
     QTimer            m_healthTimer;                // drives checkStreamHealth()
+    QTimer            m_teardownTimer;              // gives up waiting for the M8 answer
+    int               m_teardownCseq   = -1;        // CSeq of our M8 TEARDOWN
     uint64_t          m_lastStreamErrors = 0;
     // IDR backoff while no frame has decoded (checkStreamHealth, 1 tick = 1 s)
     static constexpr int kMaxIdrIntervalSec = 16;
