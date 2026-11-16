@@ -908,7 +908,10 @@ TEST(MiracastHandlerTest, WfdCapabilityResponse720p) {
     const uint vesa = f[5].toUInt(&ok, 16);
     ASSERT_TRUE(ok);
     EXPECT_EQ(cea, 0x843Fu);
-    EXPECT_EQ(vesa, 0x1555u);
+    EXPECT_EQ(vesa, 0x1400u);
+    // Only 16:9 VESA modes (1360x768p30, 1366x768p30): a 4:3 or 16:10 mode
+    // chosen by a Windows source would be letterboxed on a TV
+    EXPECT_EQ(vesa & ~((1u << 10) | (1u << 12)), 0u);
     // No 1080p/1080i (CEA bits 7-9, 12-14, 16) or 720p50/60 (bits 6, 11)
     for (int bit : {6, 7, 8, 9, 11, 12, 13, 14, 16}) {
         EXPECT_FALSE(cea & (1u << bit)) << "CEA bit " << bit;

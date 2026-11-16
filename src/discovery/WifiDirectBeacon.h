@@ -95,6 +95,14 @@ public:
     // beacon was on, restore the P2P settings it saved. Asynchronous.
     void recoverStaleState();
 
+    // Stops listening for Wi-Fi Direct scans while paused (e.g. while a sender
+    // is on screen), and resumes it after. The listen takes the radio off the
+    // station's channel for half of each second: a stream arriving over the
+    // network loses packets meanwhile (measured: 37% of a Windows Miracast
+    // stream on a Raspberry Pi 4, none with the listen paused). The receiver
+    // can't be discovered while paused. Asynchronous.
+    void setListenPaused(bool paused);
+
     // Called (on this object's thread) when a Wi-Fi Direct source is ready for
     // the RTSP session. May be set before or after start().
     void setSourceHandler(std::function<void(const WifiDirectSource&)> handler);

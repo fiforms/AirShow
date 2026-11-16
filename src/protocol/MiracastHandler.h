@@ -96,13 +96,15 @@ public:
         "wfd_connector_type: 05\r\n";
 
     // wfd_video_formats line limited to 720p30: CEA modes up to 1280x720p30
-    // (bits 0-5, 10 = 720p25, 15 = 720p24: 0x843F) and VESA modes up to
-    // 1366x768 at 30 Hz (bits 0, 2, ..., 12: 0x1555). Less than half the pixel
-    // rate of 1080p30, for receivers that decode in software on a small CPU.
+    // (bits 0-5, 10 = 720p25, 15 = 720p24: 0x843F) and the 16:9 VESA modes
+    // 1360x768p30 and 1366x768p30 (bits 10, 12: 0x1400). Less than half the
+    // pixel rate of 1080p30, for receivers that decode in software on a small
+    // CPU. No 4:3 / 16:10 VESA modes: Windows picks one matching its own screen
+    // in mirror mode (seen: 1024x768), which is then letterboxed on a TV.
     static constexpr const char* kWfdVideoFormats720p =
         "wfd_video_formats: "
         "00 00 02 10 "
-        "0000843F 00001555 00000FFF "
+        "0000843F 00001400 00000FFF "
         "00 0000 0000 00 none none\r\n";
 
     // The M3 capability response, with the video formats limited to 720p30 when

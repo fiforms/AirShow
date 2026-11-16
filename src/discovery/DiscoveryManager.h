@@ -33,6 +33,10 @@ public:
     // for the sink to start the Miracast RTSP session. See WifiDirectBeacon.
     void setWifiDirectSourceHandler(std::function<void(const WifiDirectSource&)> handler);
 
+    // Pause the Wi-Fi Direct beacon's listening while a session is on screen
+    // (see WifiDirectBeacon::setListenPaused).
+    void setWifiDirectListenPaused(bool paused);
+
     // Start all service advertisements. Returns false if advertiser unavailable.
     bool start();
 

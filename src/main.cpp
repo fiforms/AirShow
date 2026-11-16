@@ -319,6 +319,13 @@ int main(int argc, char* argv[]) {
     window.engine()->rootContext()->setContextProperty(
         QStringLiteral("securityManager"), &securityManager);
 
+    // While a sender is on screen, keep the radio on the network's channel: the
+    // Wi-Fi Direct beacon's listening would cost the stream packets
+    QObject::connect(window.connectionBridge(), &airshow::ConnectionBridge::connectedChanged,
+                     [&discovery](bool connected) {
+                         discovery.setWifiDirectListenPaused(connected);
+                     });
+
     // --on-session-start / --on-session-end (e.g. hide a kiosk browser while casting)
     airshow::SessionHooks sessionHooks(window.connectionBridge(),
                                        parser.value(sessionStartOption),

@@ -44,6 +44,10 @@ DiscoveryManager::~DiscoveryManager() {
     stop();
 }
 
+void DiscoveryManager::setWifiDirectListenPaused(bool paused) {
+    m_wifiDirect->setListenPaused(paused);
+}
+
 void DiscoveryManager::setWifiDirectSourceHandler(
         std::function<void(const WifiDirectSource&)> handler) {
     m_wifiDirect->setSourceHandler(std::move(handler));

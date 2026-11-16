@@ -265,6 +265,7 @@ struct WifiDirectBeacon::Impl : QObject {
     // Wi-Fi Direct sources (Android). One request / group at a time.
     guint             signalSub = 0;
     bool              accepting = false;       // between apply() and restore()
+    bool              listenPaused = false;    // setListenPaused()
     std::string       pendingPeer;             // peer object we accepted
     std::chrono::steady_clock::time_point pendingSince;
     WifiDirectSource  pendingSource;
@@ -515,9 +516,13 @@ struct WifiDirectBeacon::Impl : QObject {
         accepting   = true;
 
         // Listen 500 ms of every 1000 ms so Windows' P2P scan gets probe
-        // responses. Not while in a group: the radio has to stay on its channel.
-        if (!groupActive && !call("ExtendedListen", listenVariant(500, 1000), &err))
+        // responses. Not while in a group or paused (a session is on screen):
+        // the radio has to stay on its channel.
+        if (groupActive || listenPaused) {
+            call("ExtendedListen", listenVariant(0, 0), nullptr);
+        } else if (!call("ExtendedListen", listenVariant(500, 1000), &err)) {
             return fail("starting P2P listen");
+        }
 
         why = "via " + ifname + " (host " + host.toStdString() + ", " + pairing + ")";
         return true;
@@ -908,6 +913,23 @@ void WifiDirectBeacon::rename(const QString& deviceName) {
     }
 }
 
+void WifiDirectBeacon::setListenPaused(bool paused) {
+    if (!m_thread.isRunning()) return;  // never started: nothing listens
+    QMetaObject::invokeMethod(d.get(), [this, paused] {
+        if (d->listenPaused == paused) return;
+        d->listenPaused = paused;
+        if (!d->accepting) return;  // stopped: restore() already ended the listen
+        std::string why;
+        if (d->apply(d->appliedName, why)) {
+            g_message("WifiDirectBeacon: %s listening for Wi-Fi Direct scans",
+                      paused ? "paused" : "resumed");
+        } else {
+            g_warning("WifiDirectBeacon: could not %s listening: %s",
+                      paused ? "pause" : "resume", why.c_str());
+        }
+    }, Qt::QueuedConnection);
+}
+
 void WifiDirectBeacon::recoverStaleState() {
     if (!Impl::hasPersisted()) return;
     ensureWorker();
@@ -935,6 +957,7 @@ void WifiDirectBeacon::start(const QString& deviceName) { m_deviceName = deviceN
 void WifiDirectBeacon::stop() {}
 void WifiDirectBeacon::rename(const QString& deviceName) { m_deviceName = deviceName; }
 void WifiDirectBeacon::recoverStaleState() {}
+void WifiDirectBeacon::setListenPaused(bool) {}
 void WifiDirectBeacon::ensureWorker() {}
 void WifiDirectBeacon::postApply(bool) {}
 
