@@ -58,7 +58,8 @@ public:
     bool advertise(const std::string& serviceType,
                    const std::string& name,
                    uint16_t port,
-                   const std::vector<TxtRecord>& txt) override;
+                   const std::vector<TxtRecord>& txt,
+                   const std::string& nameSuffix = {}) override;
 
     bool rename(const std::string& newName) override;
     void stop() override;
@@ -76,6 +77,7 @@ private:
         uint16_t                 port;
         std::vector<TxtRecord>   txt;
         DNSServiceRef            sdRef = nullptr;
+        std::string              nameSuffix;  // kept on rename
     };
 
     // Build a TXT record byte vector from TxtRecord list.

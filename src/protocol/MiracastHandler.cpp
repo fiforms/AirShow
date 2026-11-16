@@ -22,18 +22,35 @@ namespace {
 // nullptr. disconnectFromHost() + an immediate deleteLater() would discard the
 // write buffer, losing e.g. the TEARDOWN request and the 200 OK to the
 // source's TEARDOWN. Deleted after at most 3 s if the peer never reads.
-void closeGracefully(QTcpSocket*& socket, QObject* owner) {
+//
+// Whatever the peer still sends is read and discarded: closing a socket with
+// unread data makes the kernel answer with a reset instead of a normal close,
+// which Windows' projection stack handles badly (it sends STOP_PROJECTION and
+// the RTSP TEARDOWN response while we close). With waitForPeerMs > 0 the peer
+// gets that long to close first (MS-MICE: the source ends the connection).
+void closeGracefully(QTcpSocket*& socket, QObject* owner, int waitForPeerMs = 0) {
     QTcpSocket* s = socket;
     socket = nullptr;
     if (!s) return;
     s->disconnect(owner);
+    QObject::connect(s, &QIODevice::readyRead, s, [s] { s->readAll(); });
     QObject::connect(s, &QAbstractSocket::disconnected, s, &QObject::deleteLater);
-    QTimer::singleShot(3000, s, &QObject::deleteLater);
+    QTimer::singleShot(waitForPeerMs + 3000, s, &QObject::deleteLater);
+    s->readAll();
+    if (waitForPeerMs > 0 && s->state() == QAbstractSocket::ConnectedState) {
+        QTimer::singleShot(waitForPeerMs, s, [s] { s->disconnectFromHost(); });
+        return;
+    }
     s->disconnectFromHost();
     if (s->state() == QAbstractSocket::UnconnectedState) {
         s->deleteLater();
     }
 }
+
+// How long to wait for the source's answer to our TEARDOWN (M8), and for an
+// MS-MICE source to close its connection, before closing ourselves
+constexpr int kTeardownResponseMs = 2000;
+constexpr int kMiceCloseWaitMs    = 5000;
 } // namespace
 
 // ── MiracastHandler ──────────────────────────────────────────────────────────
@@ -45,6 +62,14 @@ MiracastHandler::MiracastHandler(ConnectionBridge* connectionBridge, QObject* pa
 {
     m_healthTimer.setInterval(1000);
     connect(&m_healthTimer, &QTimer::timeout, this, &MiracastHandler::checkStreamHealth);
+    m_teardownTimer.setSingleShot(true);
+    m_teardownTimer.setInterval(kTeardownResponseMs);
+    connect(&m_teardownTimer, &QTimer::timeout, this, [this] {
+        if (m_state == State::TearingDown) {
+            qDebug("Miracast: no answer to TEARDOWN — closing");
+            teardown();
+        }
+    });
 }
 
 MiracastHandler::~MiracastHandler() {
@@ -152,6 +177,7 @@ void MiracastHandler::onMiceConnection() {
     m_sourceAddr = peer;
     m_miceClient = socket;
     m_miceBuffer.clear();
+    ++m_approvalToken;  // replaces a Wi-Fi Direct source awaiting approval
     connect(m_miceClient, &QTcpSocket::readyRead,
             this, &MiracastHandler::onMiceData);
 
@@ -249,7 +275,8 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
         QPointer<MiracastHandler> self(this);
         QPointer<QTcpSocket>      client(m_miceClient);
         m_securityManager->checkConnectionAsync(
-            m_sourceName, QStringLiteral("Miracast"), m_sourceAddr.toString(),
+            m_sourceName, QStringLiteral("Miracast"),
+            approvalIdentifier(m_sourceId, {}, m_sourceAddr),
             [self, client](bool approved) {
                 if (!self || !client || client != self->m_miceClient ||
                     self->m_state != State::WaitingSourceReady) {
@@ -268,6 +295,83 @@ void MiracastHandler::handleSourceReady(const QByteArray& data) {
         // No security manager — connect directly (backward compatible)
         connectToSource();
     }
+}
+
+// static
+QString MiracastHandler::approvalIdentifier(const QString& miceSourceId,
+                                            const QString& wifiDirectDeviceAddress,
+                                            const QHostAddress& address) {
+    if (!miceSourceId.isEmpty()) return QStringLiteral("miracast:") + miceSourceId;
+    if (!wifiDirectDeviceAddress.isEmpty())
+        return QStringLiteral("wifi-direct:") + wifiDirectDeviceAddress.toLower();
+    return address.toString();
+}
+
+void MiracastHandler::connectWifiDirectSource(const QString& name, const QHostAddress& address,
+                                              uint16_t rtspPort, const QString& deviceAddress) {
+    if (!m_running) return;
+    qDebug("MiracastHandler: Wi-Fi Direct source '%s' at %s:%u",
+           qPrintable(name), qPrintable(address.toString()), static_cast<unsigned>(rtspPort));
+
+    // Single-session model, as for MS-MICE (onMiceConnection)
+    const bool sessionActive = m_state != State::Idle && m_state != State::WaitingSourceReady;
+    if (sessionActive) {
+        if (!address.isEqual(m_sourceAddr, QHostAddress::ConvertV4MappedToIPv4)) {
+            qWarning("MiracastHandler: busy with %s — ignoring Wi-Fi Direct source %s",
+                     qPrintable(m_sourceAddr.toString()), qPrintable(address.toString()));
+            return;
+        }
+        qDebug("MiracastHandler: source reconnected over Wi-Fi Direct — restarting the session");
+        teardown();
+    }
+    if (m_miceClient) {
+        // An MS-MICE connection still awaiting approval: replaced
+        closeGracefully(m_miceClient, this);
+    }
+
+    m_sourceAddr = address;
+    m_sourceName = name;
+    m_sourceId.clear();
+    m_sourceDeviceAddress = deviceAddress;
+    m_rtspPort   = rtspPort > 0 ? rtspPort : kRtspPort;
+    m_state      = State::WaitingSourceReady;
+    const quint64 token = ++m_approvalToken;
+
+    if (m_securityManager && !SecurityManager::isLocalNetwork(m_sourceAddr)) {
+        qWarning("MiracastHandler: rejecting non-local source %s",
+                 qPrintable(m_sourceAddr.toString()));
+        return;
+    }
+    if (!m_securityManager) {
+        connectToSource();
+        return;
+    }
+    QPointer<MiracastHandler> self(this);
+    m_securityManager->checkConnectionAsync(
+        m_sourceName, QStringLiteral("Miracast"),
+        approvalIdentifier({}, m_sourceDeviceAddress, m_sourceAddr),
+        [self, token](bool approved) {
+            if (!self || token != self->m_approvalToken ||
+                self->m_state != State::WaitingSourceReady) {
+                qDebug("MiracastHandler: ignoring approval for a source that is gone");
+                return;
+            }
+            if (!approved) {
+                // The source gives up on its own and ends the group
+                qDebug("MiracastHandler: Wi-Fi Direct source denied by security manager");
+                return;
+            }
+            self->connectToSource();
+        });
+}
+
+// static
+QByteArray MiracastHandler::wfdCapabilityResponse(bool limitTo720p) {
+    QByteArray resp(kWfdCapabilityResponse);
+    if (!limitTo720p) return resp;
+    // Replace the first line (wfd_video_formats)
+    const qsizetype end = resp.indexOf("\r\n") + 2;
+    return QByteArray(kWfdVideoFormats720p) + resp.mid(end);
 }
 
 // static
@@ -437,7 +541,7 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
             qDebug("Miracast: keepalive GET_PARAMETER acknowledged");
         } else {
             // M3: capability query
-            const QString capResp = QString::fromUtf8(kWfdCapabilityResponse);
+            const QString capResp = QString::fromUtf8(wfdCapabilityResponse(m_limitTo720p));
             m_rtspSocket->write(buildRtspResponse(msg.cseq, 200, capResp).toUtf8());
             m_state = State::NegotiatingM4;
             qDebug("Miracast: sent M3 capability response");
@@ -474,9 +578,13 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
                 sendRtspRequest(QStringLiteral("PAUSE"), streamUri(),
                                 QStringLiteral("Session: %1\r\n").arg(m_sessionId));
             } else if (method == QStringLiteral("TEARDOWN")) {
-                sendRtspRequest(QStringLiteral("TEARDOWN"), streamUri(),
-                                QStringLiteral("Session: %1\r\n").arg(m_sessionId));
-                teardown();
+                // M8: the session ends once the source answers (or closes, or
+                // after kTeardownResponseMs). The picture goes away now.
+                m_teardownCseq = sendRtspRequest(QStringLiteral("TEARDOWN"), streamUri(),
+                                    QStringLiteral("Session: %1\r\n").arg(m_sessionId));
+                stopMedia();
+                m_state = State::TearingDown;
+                m_teardownTimer.start();
             }
         } else if (url.isEmpty()) {
             qDebug("Miracast: SET_PARAMETER acknowledged:\n%s", msg.body.constData());
@@ -498,6 +606,11 @@ void MiracastHandler::handleRtspRequest(const RtspMessage& msg) {
 }
 
 void MiracastHandler::handleRtspResponse(const RtspMessage& msg) {
+    if (msg.cseq == m_teardownCseq && m_state == State::TearingDown) {
+        qDebug("Miracast: TEARDOWN answered (%d) — closing", msg.statusCode);
+        teardown();
+        return;
+    }
     if (msg.cseq == m_m2Cseq) {
         if (msg.statusCode == 200) {
             m_state = State::NegotiatingM3;
@@ -556,6 +669,7 @@ void MiracastHandler::handleRtspResponse(const RtspMessage& msg) {
         m_state = State::Streaming;
         m_lastStreamErrors = 0;
         m_healthTicks = 0;
+        m_statsFrames = 0;
         m_idrInterval = 1;
         m_nextIdrTick = 1;
         m_healthTimer.start();
@@ -594,6 +708,16 @@ void MiracastHandler::checkStreamHealth() {
     const uint64_t frames = m_pipeline->miracastFramesDecoded();
     const uint64_t errors = m_pipeline->miracastStreamErrors();
     ++m_healthTicks;
+
+    // Throughput for diagnostics (stalls, slow decode)
+    if (m_healthTicks % kStatsIntervalSec == 0) {
+        qDebug("Miracast: %llu frames decoded (%.1f fps over %d s), %llu stream errors",
+               static_cast<unsigned long long>(frames),
+               double(frames - m_statsFrames) / kStatsIntervalSec, kStatsIntervalSec,
+               static_cast<unsigned long long>(errors));
+        m_statsFrames = frames;
+        qDebug("Miracast: buffered: %s", m_pipeline->miracastBufferReport().c_str());
+    }
 
     if (frames == 0) {
         // Nothing decoded yet: the first IDR may have been lost. Ask again with
@@ -670,7 +794,7 @@ QString MiracastHandler::parseSessionId(const QString& sessionHeader) {
 
 void MiracastHandler::onRtspDisconnected() {
     qDebug("MiracastHandler: RTSP socket disconnected (state=%d)", static_cast<int>(m_state));
-    if (m_state == State::Streaming) {
+    if (m_state == State::Streaming || m_state == State::TearingDown) {
         teardown();
     } else {
         // Clean up and reset to waiting for next connection
@@ -692,31 +816,38 @@ void MiracastHandler::onRtspDisconnected() {
 
 // ── Helper methods ─────────────────────────────────────────────────────────────
 
-void MiracastHandler::teardown() {
-    m_state = State::TearingDown;
+void MiracastHandler::stopMedia() {
     m_healthTimer.stop();
-    qDebug("Miracast: session ended");
-
     if (m_pipeline) {
         m_pipeline->stopMiracast();
     }
-
     if (m_connectionBridge) {
         m_connectionBridge->setConnected(false);
     }
+}
+
+void MiracastHandler::teardown() {
+    m_state = State::TearingDown;
+    m_teardownTimer.stop();
+    m_teardownCseq = -1;
+    qDebug("Miracast: session ended");
+
+    stopMedia();
 
     if (m_rtspSocket) {
         closeGracefully(m_rtspSocket, this);
     }
 
     if (m_miceClient) {
-        closeGracefully(m_miceClient, this);
+        // The source ends MS-MICE (STOP_PROJECTION, then closes): let it
+        closeGracefully(m_miceClient, this, kMiceCloseWaitMs);
     }
 
     m_rtspBuffer.clear();
     m_miceBuffer.clear();
     m_sourceName.clear();
     m_sourceId.clear();
+    m_sourceDeviceAddress.clear();
     m_presentationUrl.clear();
     m_sessionId.clear();
     m_m2Cseq = m_setupCseq = m_playCseq = -1;

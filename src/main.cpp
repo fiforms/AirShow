@@ -6,12 +6,17 @@
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QNetworkInterface>
+#include <QTimer>
+#include <QTextStream>
+#include <optional>
 #include <gst/gst.h>
 #include "pipeline/MediaPipeline.h"
 #include "ui/ReceiverWindow.h"
 #include "ui/ConnectionBridge.h"
 #include "ui/SessionHooks.h"
 #include "settings/AppSettings.h"
+#include "settings/RememberedDevices.h"
+#include "ui/QuitKeys.h"
 #include "security/SecurityManager.h"
 #include "discovery/DiscoveryManager.h"
 #include "discovery/UpnpAdvertiser.h"
@@ -20,6 +25,7 @@
 #include "protocol/CastHandler.h"
 #include "protocol/DlnaHandler.h"
 #include "protocol/MiracastHandler.h"
+#include "discovery/WifiDirectBeacon.h"
 #include "protocol/AirShowHandler.h"
 #include "protocol/ProtocolManager.h"
 #include "web/WebInterface.h"
@@ -212,6 +218,22 @@ static void notifySystemdReady() {
 #endif
 
 int main(int argc, char* argv[]) {
+    // --list-remembered / --forget-remembered: settings only, so they run
+    // before GStreamer or a display is needed (works over SSH)
+    {
+        QStringList args;
+        for (int i = 1; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        if (airshow::isRememberedDevicesCommand(args)) {
+            QCoreApplication::setOrganizationName("AirShow");
+            QCoreApplication::setApplicationName("AirShow");
+            QCoreApplication app(argc, argv);
+            airshow::AppSettings settings;
+            QTextStream out(stdout);
+            QTextStream err(stderr);
+            return airshow::runRememberedDevicesCommand(args, settings, out, err);
+        }
+    }
+
     useBundledGStreamer();
     gst_init(&argc, &argv);
     checkRequiredPlugins();
@@ -247,7 +269,55 @@ int main(int argc, char* argv[]) {
                        "and on exit if a session is still active."),
         QStringLiteral("command"));
     parser.addOption(sessionEndOption);
+    const QCommandLineOption quitKeysOption(
+        QStringList{QStringLiteral("quit-keys")},
+        QStringLiteral("Exit when one of these keys is pressed (while AirShow's window has "
+                       "focus), e.g. to leave a kiosk's AirShow mode with a remote control "
+                       "button. Linux key codes as evtest shows them (172 = Home, 158 = Back "
+                       "on many remotes) or Qt key names (Escape, F11), separated by commas."),
+        QStringLiteral("keys"));
+    parser.addOption(quitKeysOption);
+    const QCommandLineOption approvalOption(
+        QStringList{QStringLiteral("approval")},
+        QStringLiteral("How to handle devices that aren't remembered, for this run: 'prompt' "
+                       "asks (and remembers approved devices), 'known-only' rejects them "
+                       "without asking. Default: the requireApproval setting decides."),
+        QStringLiteral("prompt|known-only"));
+    parser.addOption(approvalOption);
+    // Handled at the top of main(); listed here for --help
+    parser.addOption(QCommandLineOption(
+        QStringList{QStringLiteral("list-remembered")},
+        QStringLiteral("List the devices remembered after approval (admitted without the "
+                       "approval prompt), then exit.")));
+    parser.addOption(QCommandLineOption(
+        QStringList{QStringLiteral("forget-remembered")},
+        QStringLiteral("Forget a remembered device, by identifier or device name (as "
+                       "--list-remembered shows), or all of them, then exit."),
+        QStringLiteral("device|all")));
     parser.process(app);
+
+    std::optional<airshow::SecurityManager::ApprovalMode> approvalMode;
+    if (parser.isSet(approvalOption)) {
+        const QString mode = parser.value(approvalOption);
+        if (mode == QLatin1String("prompt")) {
+            approvalMode = airshow::SecurityManager::ApprovalMode::Prompt;
+        } else if (mode == QLatin1String("known-only")) {
+            approvalMode = airshow::SecurityManager::ApprovalMode::KnownOnly;
+        } else {
+            qCritical("--approval: '%s' is not 'prompt' or 'known-only'", qPrintable(mode));
+            return 2;
+        }
+    }
+    if (parser.isSet(quitKeysOption)) {
+        QList<airshow::QuitKeys::Key> keys;
+        QString error;
+        if (!airshow::QuitKeys::parse(parser.value(quitKeysOption), keys, error)) {
+            qCritical("--quit-keys: %s", qPrintable(error));
+            return 2;
+        }
+        app.installEventFilter(new airshow::QuitKeys(keys, &app));
+        qInfo("Quit keys: %s", qPrintable(parser.value(quitKeysOption)));
+    }
 
 #ifndef _WIN32
     quitOnSignals(app);
@@ -258,6 +328,11 @@ int main(int argc, char* argv[]) {
     // Phase 7: SecurityManager — must outlive all protocol handlers.
     // Constructed after AppSettings (dependency injection) and before any handler.
     airshow::SecurityManager securityManager(settings);
+    if (approvalMode) {
+        securityManager.setApprovalMode(*approvalMode);
+        qInfo("Approval: %s", *approvalMode == airshow::SecurityManager::ApprovalMode::KnownOnly
+                                  ? "known devices only" : "prompt for new devices");
+    }
 
     // Windows firewall rules — first launch only (D-12/D-13/D-14)
     if (settings.isFirstLaunch()) {
@@ -317,6 +392,26 @@ int main(int argc, char* argv[]) {
                      &airshow::ConnectionBridge::showApprovalRequest);
     window.engine()->rootContext()->setContextProperty(
         QStringLiteral("securityManager"), &securityManager);
+
+    // While a sender is on screen, keep the radio on the network's channel: the
+    // Wi-Fi Direct beacon's listening would cost the stream packets. Resume a
+    // few seconds after the session ends, so the sender's last messages (e.g.
+    // Windows' teardown) aren't lost to it either.
+    QTimer resumeListenTimer;
+    resumeListenTimer.setSingleShot(true);
+    resumeListenTimer.setInterval(5000);
+    QObject::connect(&resumeListenTimer, &QTimer::timeout, [&discovery] {
+        discovery.setWifiDirectListenPaused(false);
+    });
+    QObject::connect(window.connectionBridge(), &airshow::ConnectionBridge::connectedChanged,
+                     [&discovery, &resumeListenTimer](bool connected) {
+                         if (connected) {
+                             resumeListenTimer.stop();
+                             discovery.setWifiDirectListenPaused(true);
+                         } else {
+                             resumeListenTimer.start();
+                         }
+                     });
 
     // --on-session-start / --on-session-end (e.g. hide a kiosk browser while casting)
     airshow::SessionHooks sessionHooks(window.connectionBridge(),
@@ -379,11 +474,36 @@ int main(int argc, char* argv[]) {
             window.connectionBridge());
         // Phase 7: Wire SecurityManager for connection approval + RFC1918 filter
         miracastHandler->setSecurityManager(&securityManager);
+        // Offered video resolution: software H.264 decode on a small ARM CPU
+        // (Raspberry Pi) falls behind at 1080p, so "auto" offers 720p there
+        {
+            const QString maxRes = settings.miracastMaxResolution();
+            bool limit720 = maxRes == QLatin1String("720");
+            if (maxRes == QLatin1String("auto")) {
+#if defined(Q_PROCESSOR_ARM)
+                limit720 = !gst_registry_check_feature_version(
+                    gst_registry_get(), "vaapidecodebin", 1, 20, 0);
+#endif
+            } else if (maxRes != QLatin1String("720") && maxRes != QLatin1String("1080")) {
+                qWarning("Unknown miracast/maxResolution '%s' — using 1080",
+                         qPrintable(maxRes));
+            }
+            miracastHandler->setLimitTo720p(limit720);
+            qInfo("Miracast: offering video up to %s", limit720 ? "720p30" : "1080p60");
+        }
         // QML video item pointer: nullptr here — the real pointer is stored in
         // MediaPipeline::m_qmlVideoItem (set by ReceiverWindow after sceneGraphInitialized).
         // MiracastHandler passes m_qmlVideoItem to initMiracastPipeline() at session time.
         // Same deferred-pointer pattern as pipeline.setQmlVideoItem(nullptr) above.
         miracastHandler->setQmlVideoItem(nullptr);
+        // Android sources join over Wi-Fi Direct; the beacon hands them over
+        // once the group is up (WifiDirectBeacon)
+        airshow::MiracastHandler* miracast = miracastHandler.get();
+        discovery.setWifiDirectSourceHandler(
+            [miracast](const airshow::WifiDirectSource& source) {
+                miracast->connectWifiDirectSource(source.name, QHostAddress(source.address),
+                                                  source.rtspPort, source.deviceAddress);
+            });
         protocolManager.addHandler(std::move(miracastHandler));
         // NOTE: addHandler() calls handler->setMediaPipeline(m_pipeline) internally.
     }
@@ -446,6 +566,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     int result = app.exec();
+    discovery.setWifiDirectSourceHandler(nullptr);  // the handler goes with protocolManager
     webInterface.stop();
     protocolManager.stopAll();
     discovery.stop();

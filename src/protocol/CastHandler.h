@@ -39,7 +39,7 @@ public:
     void senderConnected(const QString& senderName) override;
     void senderDisconnected() override;
     bool canDecode(const std::string& codec) override;
-    bool playUrl(const QString& url) override;
+    bool playUrl(const QString& url, bool live) override;
     bool startStream(const std::string& videoCaps, const std::string& audioCaps) override;
     void pushVideoFrame(const uint8_t* data, size_t size, bool keyFrame) override;
     void pushAudioFrame(const uint8_t* data, size_t size) override;

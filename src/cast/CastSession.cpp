@@ -434,12 +434,12 @@ void CastSession::onMedia(const CastMessage& msg) {
         sendMessage(reply);
 
     } else if (type == QStringLiteral("LOAD")) {
-        // Extract content URL from media.contentId (per D-10)
+        // Content URL from media.contentUrl, else media.contentId (D-10)
         QJsonObject mediaObj = json.value(QStringLiteral("media")).toObject();
-        QString contentId = mediaObj.value(QStringLiteral("contentId")).toString();
+        const QString contentId = mediaUrl(mediaObj);
 
         if (contentId.isEmpty()) {
-            qWarning("CastSession: LOAD missing contentId — sending INVALID_REQUEST");
+            qWarning("CastSession: LOAD without contentUrl or contentId — sending INVALID_REQUEST");
             QJsonObject errorStatus;
             errorStatus[QStringLiteral("type")] = QStringLiteral("INVALID_REQUEST");
             errorStatus[QStringLiteral("requestId")] = requestId;
@@ -455,9 +455,12 @@ void CastSession::onMedia(const CastMessage& msg) {
             return;
         }
 
-        qDebug("CastSession: LOAD contentId='%s'", qPrintable(contentId));
+        qDebug("CastSession: LOAD '%s' (%s)", qPrintable(contentId),
+               qPrintable(mediaObj.value(QStringLiteral("contentType")).toString()));
 
-        if (!m_host || !m_host->playUrl(contentId))
+        const bool live = mediaObj.value(QStringLiteral("streamType")).toString() ==
+                          QLatin1String("LIVE");
+        if (!m_host || !m_host->playUrl(contentId, live))
             qWarning("CastSession: host could not play '%s'", qPrintable(contentId));
 
         // Reply with MEDIA_STATUS: BUFFERING state
@@ -660,6 +663,12 @@ QByteArray CastSession::buildReceiverStatus(int requestId) const {
     status[QStringLiteral("status")] = statusInner;
 
     return QJsonDocument(status).toJson(QJsonDocument::Compact);
+}
+
+// static
+QString CastSession::mediaUrl(const QJsonObject& media) {
+    const QString url = media.value(QStringLiteral("contentUrl")).toString();
+    return url.isEmpty() ? media.value(QStringLiteral("contentId")).toString() : url;
 }
 
 } // namespace airshow::cast

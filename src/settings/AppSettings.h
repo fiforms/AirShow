@@ -41,6 +41,13 @@ public:
     bool wifiDirectBeacon() const;
     void setWifiDirectBeacon(bool v);
 
+    // Highest video resolution offered to Miracast sources: "1080" (up to
+    // 1080p60), "720" (up to 720p30), or "auto" (default): 720 on ARM boards
+    // without VA-API hardware decode (e.g. Raspberry Pi), whose software
+    // decoder can't keep up with 1080p, else 1080.
+    // Key: "miracast/maxResolution"
+    QString miracastMaxResolution() const;
+
     // --- Security settings (Phase 7 / D-11) ------------------------------
 
     // Whether incoming connections require explicit user approval (default: true).
@@ -71,8 +78,17 @@ public:
     // Key: "security/trustedDevices"
     QStringList trustedDevices() const;
 
-    // Append deviceId to trusted list if not already present.
-    void addTrustedDevice(const QString& deviceId);
+    // Append deviceId to trusted list if not already present. deviceName and
+    // protocol, if given, are kept with it for listing (airshow
+    // --list-remembered); the identifier alone is often not readable.
+    // Key: "security/trustedDeviceNames/<deviceId, percent-encoded>" = [name, protocol]
+    void addTrustedDevice(const QString& deviceId, const QString& deviceName = {},
+                          const QString& protocol = {});
+
+    // Name and protocol stored with a trusted device (empty if none: devices
+    // trusted by older versions, or added without them).
+    QString trustedDeviceName(const QString& deviceId) const;
+    QString trustedDeviceProtocol(const QString& deviceId) const;
 
     // Remove a specific device from the trusted list.
     void removeTrustedDevice(const QString& deviceId);

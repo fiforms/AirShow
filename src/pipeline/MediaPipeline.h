@@ -78,7 +78,11 @@ public:
     // Phase 5: URI-based pipeline for DLNA media playback (D-04, D-05)
     // Pipeline: uridecodebin ! [video: videoconvert ! appsink → VideoFrameCallback]
     //                          [audio: audioconvert ! audioresample ! volume ! autoaudiosink]
-    bool initUriPipeline(void* qmlVideoItem);
+    // live: a live stream (a screen mirrored over HTTP, Cast LOAD streamType
+    // LIVE): frames and audio are shown as they arrive, and decoded frames the
+    // conversion can't keep up with are dropped, so the delay can't grow. Else
+    // clock-synced playback, as for a media file (DLNA, Cast media).
+    bool initUriPipeline(void* qmlVideoItem, bool live = false);
     void setUri(const std::string& uri);
     void playUri();
     void pauseUri();
@@ -129,6 +133,10 @@ public:
     // that usually mean a corrupted picture until the next IDR frame.
     uint64_t miracastFramesDecoded() const { return m_miracastFrames.load(); }
     uint64_t miracastStreamErrors() const  { return m_miracastErrors.load(); }
+
+    // One-line summary of how much is buffered in the Miracast pipeline (jitter
+    // buffer, queues), for diagnosing latency. Empty if no pipeline.
+    std::string miracastBufferReport() const;
 
     // White-box accessor for tests — allows gst_element_get_state on the miracast pipeline.
     GstElement* miracastPipeline() const { return m_miracastPipeline; }

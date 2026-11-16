@@ -879,3 +879,55 @@ TEST(MiracastHandlerTest, RtspSessionWithFakeSource) {
 
     handler.stop();
 }
+
+// ── 720p capability variant ──────────────────────────────────────────────────
+// Offered to sources when the receiver can't decode 1080p in time (software
+// decode on a Raspberry Pi): only the wfd_video_formats line differs.
+
+TEST(MiracastHandlerTest, WfdCapabilityResponse720p) {
+    EXPECT_EQ(MiracastHandler::wfdCapabilityResponse(false),
+              QByteArray(MiracastHandler::kWfdCapabilityResponse));
+
+    const QByteArray full(MiracastHandler::kWfdCapabilityResponse);
+    const QByteArray limited = MiracastHandler::wfdCapabilityResponse(true);
+    const QList<QByteArray> fullLines = full.split('\n');
+    const QList<QByteArray> lines = limited.split('\n');
+    ASSERT_EQ(lines.size(), fullLines.size());
+    for (int i = 1; i < lines.size(); ++i) {
+        EXPECT_EQ(lines[i], fullLines[i]) << "line " << i << " should be unchanged";
+    }
+    ASSERT_TRUE(lines[0].startsWith("wfd_video_formats: "));
+    EXPECT_TRUE(lines[0].endsWith('\r'));
+
+    // Fields: native, preferred-display-mode, profile, level, CEA, VESA, HH, ...
+    const QList<QByteArray> f = lines[0].mid(19).trimmed().split(' ');
+    ASSERT_GE(f.size(), 7);
+    bool ok = false;
+    const uint cea = f[4].toUInt(&ok, 16);
+    ASSERT_TRUE(ok);
+    const uint vesa = f[5].toUInt(&ok, 16);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(cea, 0x843Fu);
+    EXPECT_EQ(vesa, 0x1400u);
+    // Only 16:9 VESA modes (1360x768p30, 1366x768p30): a 4:3 or 16:10 mode
+    // chosen by a Windows source would be letterboxed on a TV
+    EXPECT_EQ(vesa & ~((1u << 10) | (1u << 12)), 0u);
+    // No 1080p/1080i (CEA bits 7-9, 12-14, 16) or 720p50/60 (bits 6, 11)
+    for (int bit : {6, 7, 8, 9, 11, 12, 13, 14, 16}) {
+        EXPECT_FALSE(cea & (1u << bit)) << "CEA bit " << bit;
+    }
+    // 1280x720p30 (CEA bit 5) is offered
+    EXPECT_TRUE(cea & (1u << 5));
+}
+
+// Approvals are remembered per device, not per IP address where a stable
+// identifier exists: Windows' MS-MICE Source ID, an Android source's Wi-Fi
+// Direct device address (its IP, 192.168.49.x, is reused by every phone).
+TEST(MiracastHandlerTest, ApprovalIdentifier) {
+    const QHostAddress ip(QStringLiteral("192.168.49.1"));
+    EXPECT_EQ(MiracastHandler::approvalIdentifier(QStringLiteral("749678291932594a"), {}, ip),
+              QStringLiteral("miracast:749678291932594a"));
+    EXPECT_EQ(MiracastHandler::approvalIdentifier({}, QStringLiteral("9E:73:B1:55:C1:57"), ip),
+              QStringLiteral("wifi-direct:9e:73:b1:55:c1:57"));
+    EXPECT_EQ(MiracastHandler::approvalIdentifier({}, {}, ip), QStringLiteral("192.168.49.1"));
+}

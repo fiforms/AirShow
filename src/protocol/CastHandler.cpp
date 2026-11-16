@@ -102,12 +102,13 @@ bool CastHandler::canDecode(const std::string& codec) {
     return false;
 }
 
-bool CastHandler::playUrl(const QString& url) {
+bool CastHandler::playUrl(const QString& url, bool live) {
     // Same URI pipeline as DLNA.
-    if (!m_pipeline || !m_pipeline->initUriPipeline(nullptr)) return false;
+    if (!m_pipeline || !m_pipeline->initUriPipeline(nullptr, live)) return false;
     m_pipeline->setUri(url.toStdString());
     m_pipeline->playUri();
-    qDebug("CastHandler: URI pipeline started for '%s'", qPrintable(url));
+    qDebug("CastHandler: URI pipeline started for '%s'%s", qPrintable(url),
+           live ? " (live)" : "");
     return true;
 }
 

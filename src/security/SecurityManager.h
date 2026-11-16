@@ -7,6 +7,7 @@
 #include <QSemaphore>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace airshow {
 
@@ -48,6 +49,15 @@ class SecurityManager : public QObject {
 public:
     explicit SecurityManager(AppSettings& settings, QObject* parent = nullptr);
 
+    // How new devices are handled, for this run (airshow --approval):
+    //   Settings  — the "security/requireApproval" setting decides (default)
+    //   Prompt    — always ask about devices that aren't remembered
+    //   KnownOnly — admit remembered devices, reject all others without asking
+    //               (no prompt, so no session hook runs for them)
+    enum class ApprovalMode { Settings, Prompt, KnownOnly };
+    void setApprovalMode(ApprovalMode mode) { m_approvalMode = mode; }
+    ApprovalMode approvalMode() const { return m_approvalMode; }
+
     // --- Synchronous approval (blocks calling thread) ----------------------
     //
     // Designed for protocol callbacks that run on non-Qt threads (UxPlay RAOP
@@ -70,7 +80,8 @@ public:
     // For Cast which runs entirely on the Qt main thread (RESEARCH.md Pitfall 1).
     // Fast-path logic is the same; if a prompt is needed, stores callback keyed
     // by requestId and emits requestApproval. resolveApproval() invokes the
-    // callback on the Qt thread.
+    // callback on the Qt thread, and if approved adds deviceIdentifier (when
+    // not empty) to the trusted list, like the sync variant.
     void checkConnectionAsync(const QString& deviceName,
                               const QString& protocol,
                               const QString& deviceIdentifier,
@@ -126,12 +137,25 @@ private:
 
     AppSettings& m_settings;
     int          m_approvalTimeoutMs{15000};
+    ApprovalMode m_approvalMode{ApprovalMode::Settings};
+
+    // Fast paths shared by both checks: true/false if decided without a
+    // prompt, nullopt if the user has to be asked
+    std::optional<bool> decideWithoutPrompt(const QString& deviceName,
+                                            const QString& protocol,
+                                            const QString& deviceIdentifier) const;
 
     // Both maps are Qt-thread-only (accessed only inside invokeMethod lambdas
     // and resolveApproval). The semaphore in each ApprovalRequest acts as the
     // cross-thread synchronization primitive.
     QHash<QString, std::shared_ptr<ApprovalRequest>>  m_pendingRequests;
-    QHash<QString, std::function<void(bool)>>          m_asyncCallbacks;
+    struct AsyncRequest {
+        std::function<void(bool)> callback;
+        QString                   deviceIdentifier;  // trusted if approved
+        QString                   deviceName;        // stored with it, for listing
+        QString                   protocol;
+    };
+    QHash<QString, AsyncRequest>                       m_asyncCallbacks;
 };
 
 } // namespace airshow

@@ -11,6 +11,35 @@
 
 namespace airshow {
 
+namespace {
+// H.264 decoder for live mirroring: VA-API hardware decode (Intel/AMD GPUs;
+// vaapiFactory is the element the caller prefers), else software.
+//
+// V4L2 hardware decoders (v4l2h264dec, e.g. Raspberry Pi 4) are deliberately not
+// used: their frames are in DMA buffers the CPU reads uncached, and the appsink
+// path copies every frame to RGBA on the CPU. Measured on a Pi 4 at 1080p:
+// v4l2h264dec ! v4l2convert ! RGBA + a pixel copy = 3.5 fps, v4l2h264dec !
+// videoconvert = 13.5 fps, avdec_h264 ! videoconvert (4 threads) = 29 fps.
+// Using them needs a zero-copy (DMABuf -> EGL) display path.
+GstElement* makeH264Decoder(const char* vaapiFactory, const char* name, const char* context) {
+    for (const char* factory : {vaapiFactory, "avdec_h264"}) {
+        if (GstElement* e = gst_element_factory_make(factory, name)) {
+            g_message("%s — H.264 decoder: %s", context, factory);
+            return e;
+        }
+    }
+    return nullptr;
+}
+
+// RGBA conversion for the appsink is per-pixel CPU work: use every core.
+void useAllCores(GstElement* videoConvert) {
+    if (videoConvert &&
+        g_object_class_find_property(G_OBJECT_GET_CLASS(videoConvert), "n-threads")) {
+        g_object_set(videoConvert, "n-threads", g_get_num_processors(), nullptr);
+    }
+}
+} // namespace
+
 // ── MediaPipeline ────────────────────────────────────────────────────────────
 
 MediaPipeline::MediaPipeline() = default;
@@ -391,12 +420,10 @@ bool MediaPipeline::initAppsrcPipeline(void* qmlVideoItem) {
             nullptr);
     }
 
-    // Video decoder: try hardware (vaapih264dec) first, fall back to avdec_h264 (D-12)
-    GstElement* videoDecode = gst_element_factory_make("vaapih264dec", "videodecode");
-    if (!videoDecode) {
-        g_message("MediaPipeline::initAppsrcPipeline — vaapih264dec not available, falling back to avdec_h264");
-        videoDecode = gst_element_factory_make("avdec_h264", "videodecode");
-    }
+    // Video decoder: hardware (VA-API) first, avdec_h264 fallback (D-12)
+    GstElement* videoDecode = makeH264Decoder("vaapih264dec", "videodecode",
+                                              "MediaPipeline::initAppsrcPipeline");
+    useAllCores(videoConvert);
 
     GstElement* videoSink = createVideoSink("videosink", /*realtime=*/true);
 
@@ -550,7 +577,7 @@ bool MediaPipeline::initAppsrcPipeline(void* qmlVideoItem) {
 
 // ── Phase 5: URI-based pipeline (uridecodebin) ────────────────────────────────
 
-bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
+bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     // D-04, D-05: URI-based pipeline for DLNA media playback.
     // Pipeline: uridecodebin ! [video: videoconvert ! appsink (or fakesink)]
     //                          [audio: audioconvert ! audioresample ! volume ! autoaudiosink]
@@ -564,11 +591,32 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     GstElement* volume        = gst_element_factory_make("volume",         "uri-volume");
     GstElement* audioSink     = gst_element_factory_make("autoaudiosink",  "uri-audiosink");
 
+    // Decoded video waiting for conversion. Live: keep only the newest two
+    // frames (same as the Miracast pipeline); a file plays every frame.
+    GstElement* videoQueue   = gst_element_factory_make("queue",         "uri-videoqueue");
     GstElement* videoConvert = gst_element_factory_make("videoconvert",  "uri-videoconvert");
-    GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/false);
+    GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/live);
+    useAllCores(videoConvert);
+    if (live && videoQueue) {
+        g_object_set(videoQueue,
+            "max-size-buffers", 2,
+            "max-size-bytes",   0,
+            "max-size-time",    G_GUINT64_CONSTANT(0),
+            "leaky",            2,   // drop oldest
+            nullptr);
+    }
+    if (live && audioSink) {
+        // Play audio as it arrives, like the video (see initMiracastPipeline)
+        g_signal_connect(audioSink, "element-added",
+            G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
+                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
+                    g_object_set(child, "sync", FALSE, nullptr);
+                }
+            }), nullptr);
+    }
 
     if (!pipeline || !uridecodebin || !audioConvert || !audioResample || !volume || !audioSink ||
-        !videoConvert || !videoSink) {
+        !videoQueue || !videoConvert || !videoSink) {
         g_warning("MediaPipeline::initUriPipeline — failed to create one or more GStreamer elements");
         if (pipeline)      gst_object_unref(pipeline);
         if (uridecodebin)  gst_object_unref(uridecodebin);
@@ -576,6 +624,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
         if (audioResample) gst_object_unref(audioResample);
         if (volume)        gst_object_unref(volume);
         if (audioSink)     gst_object_unref(audioSink);
+        if (videoQueue)    gst_object_unref(videoQueue);
         if (videoConvert)  gst_object_unref(videoConvert);
         if (videoSink)     gst_object_unref(videoSink);
         return false;
@@ -584,7 +633,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     // Add all elements to pipeline — uridecodebin is not linked to sinks yet;
     // dynamic pads will be linked via pad-added callback
     gst_bin_add_many(GST_BIN(pipeline),
-        uridecodebin, videoConvert, videoSink,
+        uridecodebin, videoQueue, videoConvert, videoSink,
         audioConvert, audioResample, volume, audioSink,
         nullptr);
 
@@ -596,8 +645,8 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
         return false;
     }
 
-    // Pre-link video chain: videoconvert ! videosink
-    if (!gst_element_link(videoConvert, videoSink)) {
+    // Pre-link video chain: queue ! videoconvert ! videosink
+    if (!gst_element_link_many(videoQueue, videoConvert, videoSink, nullptr)) {
         g_warning("MediaPipeline::initUriPipeline — failed to pre-link video chain");
         gst_object_unref(pipeline);
         return false;
@@ -606,10 +655,10 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     // Connect pad-added signal on uridecodebin to link audio/video pads dynamically.
     // Payload carries the first elements of each branch's pre-linked chain.
     struct UriPadHelper {
-        GstElement* videoConvert;
+        GstElement* videoIn;      // first element of the video chain
         GstElement* audioConvert;
     };
-    auto* padData = new UriPadHelper{videoConvert, audioConvert};
+    auto* padData = new UriPadHelper{videoQueue, audioConvert};
 
     struct UriPadAddedCallback {
         static void callback(GstElement* /*decodebin*/, GstPad* pad, gpointer data) {
@@ -625,7 +674,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
             gst_caps_unref(padCaps);
 
             if (g_str_has_prefix(mediaType, "video/")) {
-                GstPad* sinkPad = gst_element_get_static_pad(payload->videoConvert, "sink");
+                GstPad* sinkPad = gst_element_get_static_pad(payload->videoIn, "sink");
                 if (sinkPad && !GST_PAD_IS_LINKED(sinkPad)) {
                     if (gst_pad_link(pad, sinkPad) != GST_PAD_LINK_OK) {
                         g_warning("MediaPipeline::initUriPipeline — video pad-added link failed");
@@ -967,7 +1016,7 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     // D-09, D-10: Miracast MPEG-TS/RTP receive pipeline (RESEARCH.md Pattern 4).
     //
     // Static chain: udpsrc ! rtpjitterbuffer ! rtpmp2tdepay ! tsparse ! tsdemux (dynamic pads)
-    // Video branch (pad-added): queue ! h264parse ! [vaapidecodebin|avdec_h264]
+    // Video branch (pad-added): queue ! h264parse ! [vaapidecodebin|avdec_h264] ! queue
     //                           ! videoconvert ! appsink  (or fakesink)
     // Audio branch (pad-added): queue ! decodebin (AAC or LPCM — we advertise both)
     //                           ! audioconvert ! audioresample ! autoaudiosink
@@ -995,15 +1044,26 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     GstElement* videoQueue  = gst_element_factory_make("queue",        "mir-videoqueue");
     GstElement* h264parse   = gst_element_factory_make("h264parse",    "mir-h264parse");
 
-    // Hardware decoder: try vaapidecodebin first, fall back to avdec_h264 (same as AirPlay D-12)
-    GstElement* videoDecode = gst_element_factory_make("vaapidecodebin", "mir-videodecode");
-    if (!videoDecode) {
-        g_message("MediaPipeline::initMiracastPipeline — vaapidecodebin not available, "
-                  "falling back to avdec_h264");
-        videoDecode = gst_element_factory_make("avdec_h264", "mir-videodecode");
+    // Hardware decoder: VA-API, else avdec_h264 (same as AirPlay D-12)
+    GstElement* videoDecode = makeH264Decoder("vaapidecodebin", "mir-videodecode",
+                                              "MediaPipeline::initMiracastPipeline");
+
+    // Decoded frames waiting for RGBA conversion: keep only the newest two. If
+    // conversion can't keep up (1080p on a Raspberry Pi), frames are skipped
+    // instead of piling up, so the picture never falls behind the source.
+    // Encoded data is never dropped (that would corrupt the following frames).
+    GstElement* decodeQueue = gst_element_factory_make("queue", "mir-decodequeue");
+    if (decodeQueue) {
+        g_object_set(decodeQueue,
+            "max-size-buffers", 2,
+            "max-size-bytes",   0,
+            "max-size-time",    G_GUINT64_CONSTANT(0),
+            "leaky",            2,   // drop oldest
+            nullptr);
     }
 
     GstElement* videoConvert = gst_element_factory_make("videoconvert", "mir-videoconvert");
+    useAllCores(videoConvert);
 
     // Screen mirroring: show frames as soon as they decode (same as AirPlay/Cast).
     // Clock-synced presentation drops or stalls frames from this live source.
@@ -1018,7 +1078,8 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
 
     // Verify all mandatory elements were created
     const bool allCreated = pipeline && udpsrc && jitterbuf && rtpmp2tdepay && tsparse && tsdemux &&
-                            videoQueue && h264parse && videoDecode && videoConvert && videoSink &&
+                            videoQueue && h264parse && videoDecode && decodeQueue &&
+                            videoConvert && videoSink &&
                             audioQueue && audioDecode && audioConvert &&
                             audioResample && audioSink;
 
@@ -1034,6 +1095,7 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
         if (videoQueue)    gst_object_unref(videoQueue);
         if (h264parse)     gst_object_unref(h264parse);
         if (videoDecode)   gst_object_unref(videoDecode);
+        if (decodeQueue)   gst_object_unref(decodeQueue);
         if (videoConvert)  gst_object_unref(videoConvert);
         if (videoSink)     gst_object_unref(videoSink);
         if (audioQueue)    gst_object_unref(audioQueue);
@@ -1062,11 +1124,33 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     // Larger socket buffer: a 1080p IDR frame is hundreds of packets in one burst
     g_object_set(udpsrc, "buffer-size", 4 * 1024 * 1024, nullptr);
     g_object_set(jitterbuf, "latency", 100, nullptr);  // ms
+    // Bounded: if the pipeline stalls, drop packets older than the latency
+    // instead of queuing them, which would delay the picture without limit.
+    // A dropped packet costs a corrupted picture until the IDR that
+    // MiracastHandler then requests.
+    g_object_set(jitterbuf, "drop-on-latency", TRUE, nullptr);
+
+    // The audio branch shares tsdemux's streaming thread with video: if the
+    // audio sink waits (clock sync), a full audio queue would block video too.
+    // Drop the oldest audio instead.
+    g_object_set(audioQueue, "leaky", 2, nullptr);
+
+    // Play audio as it arrives, like the video (createVideoSink realtime) and
+    // the AirPlay audio sink. With clock sync, sources stamp audio ahead (seen:
+    // ~1 s, Windows 11 and Samsung Smart View), so it played that far behind
+    // the picture and the audio queue sat full, dropping audio.
+    // autoaudiosink creates the real sink as a child: set it there.
+    g_signal_connect(audioSink, "element-added",
+        G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
+            if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
+                g_object_set(child, "sync", FALSE, nullptr);
+            }
+        }), nullptr);
 
     // Add all elements to the pipeline bin before linking
     gst_bin_add_many(GST_BIN(pipeline),
         udpsrc, jitterbuf, rtpmp2tdepay, tsparse, tsdemux,
-        videoQueue, h264parse, videoDecode, videoConvert, videoSink,
+        videoQueue, h264parse, videoDecode, decodeQueue, videoConvert, videoSink,
         audioQueue, audioDecode, audioConvert, audioResample, audioSink,
         nullptr);
 
@@ -1079,7 +1163,8 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     }
 
     // Pre-link the video branch internal chain (up to videosink) — not yet connected to tsdemux
-    if (!gst_element_link_many(videoQueue, h264parse, videoDecode, videoConvert, videoSink, nullptr)) {
+    if (!gst_element_link_many(videoQueue, h264parse, videoDecode, decodeQueue, videoConvert,
+                               videoSink, nullptr)) {
         g_warning("MediaPipeline::initMiracastPipeline — failed to link video branch");
         gst_object_unref(pipeline);
         return false;
@@ -1241,6 +1326,45 @@ void MediaPipeline::stopMiracast() {
         m_miracastPipeline = nullptr;
         g_message("MediaPipeline::stopMiracast — pipeline stopped and cleaned up");
     }
+}
+
+std::string MediaPipeline::miracastBufferReport() const {
+    if (!m_miracastPipeline) return {};
+    std::string out;
+    auto queueLevel = [&](const char* name) {
+        GstElement* q = gst_bin_get_by_name(GST_BIN(m_miracastPipeline), name);
+        if (!q) return;
+        guint buffers = 0;
+        guint64 time = 0;
+        g_object_get(q, "current-level-buffers", &buffers, "current-level-time", &time, nullptr);
+        char line[96];
+        std::snprintf(line, sizeof line, "%s%s=%u/%llums", out.empty() ? "" : " ", name,
+                      buffers, static_cast<unsigned long long>(time / GST_MSECOND));
+        out += line;
+        gst_object_unref(q);
+    };
+    queueLevel("mir-videoqueue");
+    queueLevel("mir-decodequeue");
+    queueLevel("mir-audioqueue");
+    if (GstElement* jb = gst_bin_get_by_name(GST_BIN(m_miracastPipeline), "mir-jitterbuffer")) {
+        GstStructure* stats = nullptr;
+        g_object_get(jb, "stats", &stats, nullptr);
+        if (stats) {
+            guint64 pushed = 0, lost = 0, late = 0;
+            gst_structure_get_uint64(stats, "num-pushed", &pushed);
+            gst_structure_get_uint64(stats, "num-lost", &lost);
+            gst_structure_get_uint64(stats, "num-late", &late);
+            char line[128];
+            std::snprintf(line, sizeof line, " jitterbuffer pushed=%llu lost=%llu late=%llu",
+                          static_cast<unsigned long long>(pushed),
+                          static_cast<unsigned long long>(lost),
+                          static_cast<unsigned long long>(late));
+            out += line;
+            gst_structure_free(stats);
+        }
+        gst_object_unref(jb);
+    }
+    return out;
 }
 
 } // namespace airshow

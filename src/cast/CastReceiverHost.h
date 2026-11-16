@@ -42,7 +42,9 @@ public:
     virtual bool canDecode(const std::string& codec) = 0;
 
     // Default Media Receiver LOAD: play a URL. Return false if playback could not start.
-    virtual bool playUrl(const QString& url) = 0;
+    // live: the sender marked the stream LIVE (e.g. a screen being mirrored over
+    // HTTP): show it as it arrives rather than clock-synced like a media file.
+    virtual bool playUrl(const QString& url, bool live) = 0;
 
     // Cast Streaming (mirroring). startStream() is given GStreamer-style caps for
     // the selected streams (empty when that kind is absent); then decrypted,

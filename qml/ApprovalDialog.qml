@@ -4,6 +4,9 @@ import QtQuick
 //
 // D-01 / SEC-01: Appears when connectionBridge.approvalPending is true.
 // D-13: Full-screen MouseArea blocks input to underlying content when visible.
+// Works without a mouse (kiosks, remotes): it takes keyboard focus when a request
+// arrives, with Allow selected. Left/Right/Tab move the selection, Enter/Return/
+// Select/Space activate it, Esc denies, Y/N allow/deny directly.
 // Follows the established HudOverlay pattern:
 //   - visible: opacity > 0 (prevents mouse-event blocking at opacity 0, RESEARCH.md Pitfall 3)
 //   - Behavior on opacity { NumberAnimation { duration: 150 } }
@@ -18,6 +21,58 @@ Item {
     opacity: connectionBridge.approvalPending ? 1.0 : 0.0
 
     Behavior on opacity { NumberAnimation { duration: 150 } }
+
+    // Keyboard selection: 0 = Allow, 1 = Deny
+    property int selected: 0
+
+    function resolve(approved) {
+        if (!connectionBridge.approvalPending) return
+        securityManager.resolveApproval(connectionBridge.pendingRequestId, approved)
+        connectionBridge.clearApprovalRequest()
+    }
+
+    Connections {
+        target: connectionBridge
+        function onApprovalPendingChanged() {
+            if (connectionBridge.approvalPending) {
+                approvalDialog.selected = 0
+                approvalDialog.forceActiveFocus()
+            } else {
+                approvalDialog.focus = false
+            }
+        }
+    }
+
+    Keys.onPressed: (event) => {
+        if (!connectionBridge.approvalPending) return
+        switch (event.key) {
+        case Qt.Key_Left:
+        case Qt.Key_Right:
+        case Qt.Key_Tab:
+        case Qt.Key_Backtab:
+        case Qt.Key_Up:
+        case Qt.Key_Down:
+            selected = 1 - selected
+            break
+        case Qt.Key_Return:
+        case Qt.Key_Enter:
+        case Qt.Key_Select:
+        case Qt.Key_Space:
+            resolve(selected === 0)
+            break
+        case Qt.Key_Escape:
+        case Qt.Key_Back:
+        case Qt.Key_N:
+            resolve(false)
+            break
+        case Qt.Key_Y:
+            resolve(true)
+            break
+        default:
+            return
+        }
+        event.accepted = true
+    }
 
     // Full-screen semi-transparent backdrop — dims the content behind the dialog
     Rectangle {
@@ -38,7 +93,7 @@ Item {
         id: dialogCard
         anchors.centerIn: parent
         width: 420
-        height: 220
+        height: 250
         radius: 12
         color: "#CC1A1A2E"
 
@@ -95,6 +150,8 @@ Item {
                         anchors.fill: parent
                         radius: 6
                         color: allowMouse.containsMouse ? "#55CC55" : "#44AA44"
+                        border.color: "white"
+                        border.width: approvalDialog.selected === 0 ? 3 : 0
                     }
 
                     Text {
@@ -111,10 +168,7 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            securityManager.resolveApproval(connectionBridge.pendingRequestId, true)
-                            connectionBridge.clearApprovalRequest()
-                        }
+                        onClicked: approvalDialog.resolve(true)
                     }
                 }
 
@@ -128,6 +182,8 @@ Item {
                         anchors.fill: parent
                         radius: 6
                         color: denyMouse.containsMouse ? "#CC5555" : "#AA4444"
+                        border.color: "white"
+                        border.width: approvalDialog.selected === 1 ? 3 : 0
                     }
 
                     Text {
@@ -144,12 +200,19 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            securityManager.resolveApproval(connectionBridge.pendingRequestId, false)
-                            connectionBridge.clearApprovalRequest()
-                        }
+                        onClicked: approvalDialog.resolve(false)
                     }
                 }
+            }
+
+            // Keyboard hint (no mouse on kiosks / remotes)
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Enter: select   \u2190 \u2192: switch   Esc: deny"
+                color: "#999999"
+                font.pixelSize: 12
+                font.family: "sans-serif"
+                horizontalAlignment: Text.AlignHCenter
             }
         }
     }

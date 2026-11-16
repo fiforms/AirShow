@@ -56,6 +56,11 @@ public:
     // the session is an active cast, not just a discovery probe (DeviceAuth only).
     bool isActive() const { return m_didConnect; }
 
+    // URL to play from a media LOAD's "media" object: contentUrl if set, else
+    // contentId. Newer senders send only contentUrl (e.g. GNOME Network
+    // Displays); when both are set, contentUrl is the one to play.
+    static QString mediaUrl(const QJsonObject& media);
+
 signals:
     // Emitted when the session ends (socket disconnected or CLOSE received).
     // CastReceiver connects this to its onSessionFinished slot.

@@ -42,10 +42,11 @@ bool AvahiAdvertiser::isAvailable() const {
 bool AvahiAdvertiser::advertise(const std::string& serviceType,
                                 const std::string& name,
                                 uint16_t port,
-                                const std::vector<TxtRecord>& txt) {
+                                const std::vector<TxtRecord>& txt,
+                                const std::string& nameSuffix) {
     if (!m_poll || !m_client) return false;
     avahi_threaded_poll_lock(m_poll);
-    m_services.push_back({serviceType, name, port, txt});
+    m_services.push_back({serviceType, name + nameSuffix, port, txt, nameSuffix});
     if (m_activeName.empty()) m_activeName = name;
     // If client is already running, register immediately.
     if (avahi_client_get_state(m_client) == AVAHI_CLIENT_S_RUNNING) {
@@ -59,7 +60,7 @@ bool AvahiAdvertiser::rename(const std::string& newName) {
     if (!m_poll || !m_client) return false;
     avahi_threaded_poll_lock(m_poll);
     m_activeName = newName;
-    for (auto& svc : m_services) svc.name = newName;
+    for (auto& svc : m_services) svc.name = newName + svc.nameSuffix;
     if (m_group) {
         avahi_entry_group_reset(m_group);
     }
@@ -175,7 +176,7 @@ void AvahiAdvertiser::groupCallback(AvahiEntryGroup* /*group*/,
             g_warning("AvahiAdvertiser: name collision, using '%s'", alt);
             self->m_activeName = alt;
             avahi_free(alt);
-            for (auto& svc : self->m_services) svc.name = self->m_activeName;
+            for (auto& svc : self->m_services) svc.name = self->m_activeName + svc.nameSuffix;
             if (self->m_group) avahi_entry_group_reset(self->m_group);
             self->createServices(self->m_client);
             break;

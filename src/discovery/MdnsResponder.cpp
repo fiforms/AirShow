@@ -149,11 +149,12 @@ public:
     }
 
     void addService(const std::string& type, const std::string& name, uint16_t port,
-                    const std::vector<TxtRecord>& txt) {
+                    const std::vector<TxtRecord>& txt, const std::string& nameSuffix) {
         Service s;
-        s.id       = m_nextId++;
-        s.type     = type;
-        s.baseName = name;
+        s.id         = m_nextId++;
+        s.type       = type;
+        s.nameSuffix = nameSuffix;
+        s.baseName   = name + nameSuffix;
         s.port     = port;
         s.txt      = txt;
         m_services.push_back(std::move(s));
@@ -163,7 +164,7 @@ public:
     void renameAll(const std::string& name) {
         for (auto& s : m_services) {
             if (s.group.announced) sendGoodbye(s);
-            s.baseName = name;
+            s.baseName = name + s.nameSuffix;
             s.suffix   = 1;
             beginProbing(s.group, randomDelay());
         }
@@ -212,6 +213,7 @@ private:
         int                    id = 0;
         std::string            type;      // "_airplay._tcp"
         std::string            baseName;  // requested instance name
+        std::string            nameSuffix;  // kept on rename (part of baseName)
         int                    suffix = 1;  // "Name (2)" after a conflict
         uint16_t               port = 0;
         std::vector<TxtRecord> txt;
@@ -763,10 +765,11 @@ MdnsResponder::~MdnsResponder() {
 bool MdnsResponder::advertise(const std::string& serviceType,
                               const std::string& name,
                               uint16_t port,
-                              const std::vector<TxtRecord>& txt) {
+                              const std::vector<TxtRecord>& txt,
+                              const std::string& nameSuffix) {
     if (!m_available) return false;
-    QMetaObject::invokeMethod(m_core, [core = m_core, serviceType, name, port, txt] {
-        core->addService(serviceType, name, port, txt);
+    QMetaObject::invokeMethod(m_core, [core = m_core, serviceType, name, port, txt, nameSuffix] {
+        core->addService(serviceType, name, port, txt, nameSuffix);
     }, Qt::QueuedConnection);
     return true;
 }

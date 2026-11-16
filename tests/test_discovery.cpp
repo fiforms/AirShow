@@ -112,3 +112,21 @@ TEST(WifiDirectBeaconTest, WfdIesBytes) {
                          "01" "0006" "000000000000"         // associated BSSID: none
                          "06" "0007" "00000000000000"));    // coupled sink: none
 }
+
+// RTSP port of a Wi-Fi Direct source, from its WFD IE subelements as
+// wpa_supplicant reports them (Peer "IEs"). The first case is a Samsung Galaxy
+// S23 Ultra (Smart View): WFD source, port 7236.
+TEST(WifiDirectBeaconTest, ParseWfdRtspPort) {
+    using airshow::WifiDirectBeacon;
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(QByteArray::fromHex("000006" "0010" "1c44" "0032")), 7236);
+    // Device information after another subelement
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(
+                  QByteArray::fromHex("010006000000000000" "000006" "0010" "1f90" "0032")), 8080);
+    // Round trip with what this sink advertises
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(WifiDirectBeacon::buildWfdIes(7236)), 7236);
+    // Absent, truncated or too short: unknown (0)
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort({}), 0);
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(QByteArray::fromHex("010006000000000000")), 0);
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(QByteArray::fromHex("000006" "00101c44")), 0);
+    EXPECT_EQ(WifiDirectBeacon::parseWfdRtspPort(QByteArray::fromHex("000004" "00101c44")), 0);
+}

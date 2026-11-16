@@ -21,13 +21,16 @@ public:
 
     // Advertise a DNS-SD service. Returns false if advertisement fails.
     // serviceType example: "_airplay._tcp"
+    // nameSuffix is appended to the instance name, and kept across rename(): it
+    // tells apart services a sender lists side by side (e.g. " (network)").
     virtual bool advertise(const std::string& serviceType,
                            const std::string& name,
                            uint16_t port,
-                           const std::vector<TxtRecord>& txt) = 0;
+                           const std::vector<TxtRecord>& txt,
+                           const std::string& nameSuffix = {}) = 0;
 
-    // Re-register all active advertisements with a new name (D-11).
-    // Called immediately when the user changes the receiver name.
+    // Re-register all active advertisements with a new name (D-11), each with
+    // its nameSuffix. Called immediately when the user changes the receiver name.
     virtual bool rename(const std::string& newName) = 0;
 
     // Stop all advertisements cleanly.

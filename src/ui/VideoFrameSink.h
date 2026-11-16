@@ -27,6 +27,11 @@ public:
     // Push a decoded video frame from any thread (GStreamer streaming thread).
     void pushFrame(const QImage& frame);
 
+    // Forget the last frame, so nothing is drawn until the next pushFrame().
+    // Called when a session ends: otherwise the next session briefly shows the
+    // previous sender's last frame before its own first one arrives.
+    Q_INVOKABLE void clear();
+
 signals:
     void forceAspectRatioChanged();
 
@@ -37,6 +42,7 @@ private:
     QMutex m_mutex;
     QImage m_pendingFrame;
     bool   m_dirty            = false;
+    bool   m_cleared          = false;  // clear() pending for the render thread
     bool   m_forceAspectRatio = true;
 };
 
