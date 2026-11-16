@@ -72,6 +72,16 @@ static void raop_cb_display_pin(void* cls, char* pin) {
     static_cast<airshow::AirPlayHandler*>(cls)->onDisplayPin(pin ? pin : "");
 }
 
+static void raop_cb_register_client(void* cls, const char* deviceId, const char* pk,
+                                    const char* name) {
+    static_cast<airshow::AirPlayHandler*>(cls)->onRegisterClient(
+        deviceId ? deviceId : "", pk ? pk : "", name ? name : "");
+}
+
+static bool raop_cb_check_register(void* cls, const char* pk) {
+    return static_cast<airshow::AirPlayHandler*>(cls)->onCheckRegister(pk ? pk : "");
+}
+
 // UxPlay calls these callbacks unconditionally (no null guard in UxPlay source).
 // Without them the function pointers are null → assert / SIGSEGV.
 
@@ -154,6 +164,9 @@ bool AirPlayHandler::start() {
     // PIN pairing (D-05, D-06): set display_pin trampoline if PIN is enabled
     if (m_securityManager && m_securityManager->isPinEnabled()) {
         callbacks.display_pin = raop_cb_display_pin;
+        // Without check_register UxPlay lets any returning client skip the PIN.
+        callbacks.register_client = raop_cb_register_client;
+        callbacks.check_register  = raop_cb_check_register;
     }
 
     // 2. Initialise RAOP server
@@ -186,12 +199,14 @@ bool AirPlayHandler::start() {
         const std::string name = m_discoveryManager ? m_discoveryManager->receiverName()
                                                     : std::string("AirShow");
 
+        // pin_pw = 1 makes the /info reply advertise pw=true, so iOS asks for the PIN.
+        const bool pinEnabled = m_securityManager && m_securityManager->isPinEnabled();
         int dnssd_err = 0;
         dnssd_t* dnssd = dnssd_init(name.c_str(),
                                      static_cast<int>(name.size()),
                                      hwAddr.data(),
                                      static_cast<int>(hwAddr.size()),
-                                     &dnssd_err, 0);
+                                     &dnssd_err, pinEnabled ? 1 : 0);
         if (!dnssd) {
             g_warning("AirPlayHandler::start — dnssd_init failed (err=%d)", dnssd_err);
         } else {
@@ -219,7 +234,10 @@ bool AirPlayHandler::start() {
     // 3b. Enable PIN pairing if configured (D-05, D-06, D-07).
     //     MUST be called after raop_init2 and before raop_start_httpd (Pitfall 2).
     if (m_securityManager && m_securityManager->isPinEnabled()) {
-        int pinValue = m_securityManager->pin().toInt();
+        const int pinValue = raopPinValue(m_securityManager->pin().toStdString());
+        if (pinValue == 0) {
+            g_warning("AirPlayHandler::start — stored PIN is not 4 digits; UxPlay will pick a random PIN per pairing");
+        }
         raop_set_plist(m_raop, "pin", pinValue);
     }
 
@@ -482,6 +500,43 @@ std::string AirPlayHandler::readPublicKeyFromKeyfile() const {
     }
 
     return hexPk;
+}
+
+// ── PIN pairing register ─────────────────────────────────────────────────────
+//
+// register_client: UxPlay calls this on SETUP for a session that completed
+// pair-setup-pin (the client typed the right PIN); pk is the client's Ed25519
+// public key. check_register: called on pair-verify by a returning client; pk is
+// the key it presents, and pair-verify then makes it prove it holds the private
+// key. Unknown keys are refused, so iOS falls back to PIN pairing.
+
+void AirPlayHandler::onRegisterClient(const std::string& deviceId, const std::string& pk,
+                                      const std::string& name) {
+    if (!m_securityManager || pk.empty()) return;
+    g_message("AirPlayHandler: PIN pairing succeeded for '%s' (%s) — remembering it",
+              name.c_str(), deviceId.c_str());
+    m_securityManager->addPinPairedClient(QString::fromStdString(pk));
+}
+
+bool AirPlayHandler::onCheckRegister(const std::string& pk) {
+    const bool known = m_securityManager &&
+                       m_securityManager->isPinPairedClient(QString::fromStdString(pk));
+    if (!known) {
+        g_message("AirPlayHandler: returning client has not paired with the current PIN — refusing pair-verify");
+    }
+    return known;
+}
+
+// ── raopPinValue() ───────────────────────────────────────────────────────────
+
+int AirPlayHandler::raopPinValue(const std::string& pin) {
+    if (pin.size() != 4) return 0;
+    int n = 0;
+    for (char c : pin) {
+        if (c < '0' || c > '9') return 0;
+        n = n * 10 + (c - '0');
+    }
+    return 10000 + n;
 }
 
 // ── onDisplayPin() ───────────────────────────────────────────────────────────

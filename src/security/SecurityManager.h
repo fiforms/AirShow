@@ -91,6 +91,14 @@ public:
     bool    isPinEnabled() const;
     QString pin() const;
 
+    // True for exactly four ASCII digits ("0000"–"9999").
+    static bool isValidPin(const QString& pin);
+
+    // AirPlay clients that completed PIN pairing, keyed by their Ed25519 public
+    // key (base64). Safe to call from protocol threads (QSettings is thread-safe).
+    void addPinPairedClient(const QString& pk);
+    bool isPinPairedClient(const QString& pk) const;
+
     // --- Testability hook -------------------------------------------------
     // Override the approval timeout (milliseconds). Default: 15000 (15 s).
     void setApprovalTimeoutMs(int ms);

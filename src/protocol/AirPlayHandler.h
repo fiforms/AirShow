@@ -59,10 +59,19 @@ public:
     // Invoked by the display_pin C trampoline when UxPlay shows a PIN pairing code.
     // Marshals the PIN to the Qt thread for ConnectionBridge / IdleScreen display (Plan 03).
     void onDisplayPin(const std::string& pin);
+    void onRegisterClient(const std::string& deviceId, const std::string& pk,
+                          const std::string& name);
+    bool onCheckRegister(const std::string& pk);
 
     // Read hex-encoded Ed25519 public key from PEM keyfile after raop_init2 generates it.
     // Returns 64-char lowercase hex string (32 bytes = ED25519_KEY_SIZE) or empty on failure.
     std::string readPublicKeyFromKeyfile() const;
+
+    // Value for raop_set_plist(raop, "pin", ...). UxPlay treats values above 9999 as
+    // a fixed PIN (value % 10000) and anything else as "generate a random PIN per
+    // pairing", so a fixed PIN "1234" must be passed as 11234. Returns 0 (random)
+    // for anything that isn't four digits.
+    static int raopPinValue(const std::string& pin);
 
 private:
     raop_t*           m_raop             = nullptr;

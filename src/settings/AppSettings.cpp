@@ -85,7 +85,32 @@ QString AppSettings::pin() const {
 
 void AppSettings::setPin(const QString& v) {
     QSettings s;
+    const bool changed = s.value(QStringLiteral("security/pin"), QString()).toString() != v;
     s.setValue(QStringLiteral("security/pin"), v);
+    if (changed) {
+        s.remove(QStringLiteral("security/pinPairedClients"));
+    }
+    s.sync();
+}
+
+QStringList AppSettings::pinPairedClients() const {
+    QSettings s;
+    return s.value(QStringLiteral("security/pinPairedClients"), QStringList()).toStringList();
+}
+
+void AppSettings::addPinPairedClient(const QString& pk) {
+    QSettings s;
+    QStringList list = s.value(QStringLiteral("security/pinPairedClients"), QStringList()).toStringList();
+    if (!list.contains(pk)) {
+        list.append(pk);
+        s.setValue(QStringLiteral("security/pinPairedClients"), list);
+        s.sync();
+    }
+}
+
+void AppSettings::clearPinPairedClients() {
+    QSettings s;
+    s.remove(QStringLiteral("security/pinPairedClients"));
     s.sync();
 }
 
