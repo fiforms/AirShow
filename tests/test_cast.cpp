@@ -37,6 +37,7 @@
 #include "cast/CastReceiverHost.h"
 #include "cast/CastStreamingOffer.h"
 #include "cast/CastStreamingReceiver.h"
+#include "cast/CastSession.h"
 
 // Generated protobuf header (from cast_channel.proto)
 #include "cast_channel.pb.h"
@@ -719,7 +720,7 @@ public:
     void senderConnected(const QString&) override { ++connected; }
     void senderDisconnected() override { --connected; }
     bool canDecode(const std::string&) override { return false; }
-    bool playUrl(const QString&) override { return false; }
+    bool playUrl(const QString&, bool) override { return false; }
     bool startStream(const std::string&, const std::string&) override { return false; }
     void pushVideoFrame(const uint8_t*, size_t, bool) override {}
     void pushAudioFrame(const uint8_t*, size_t) override {}
@@ -849,4 +850,20 @@ TEST(CastReceiverTest, StandaloneHostAuthAndApproval) {
     ASSERT_TRUE(spinUntil([&] { return host.connected == 0; }));
 
     receiver.stop();
+}
+
+// LOAD: newer senders (GNOME Network Displays) send only media.contentUrl;
+// contentUrl wins when both are present, contentId is the fallback.
+TEST(CastSessionTest, MediaUrlFromLoad) {
+    using airshow::cast::CastSession;
+    const auto media = [](const char* json) {
+        return QJsonDocument::fromJson(json).object();
+    };
+    EXPECT_EQ(CastSession::mediaUrl(media(R"({"contentUrl":"http://10.0.0.2:8080/","streamType":"LIVE"})")),
+              QStringLiteral("http://10.0.0.2:8080/"));
+    EXPECT_EQ(CastSession::mediaUrl(media(R"({"contentId":"http://a/b.mp4"})")),
+              QStringLiteral("http://a/b.mp4"));
+    EXPECT_EQ(CastSession::mediaUrl(media(R"({"contentId":"abc123","contentUrl":"http://a/c.mp4"})")),
+              QStringLiteral("http://a/c.mp4"));
+    EXPECT_TRUE(CastSession::mediaUrl(media(R"({"streamType":"LIVE"})")).isEmpty());
 }

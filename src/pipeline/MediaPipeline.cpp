@@ -577,7 +577,7 @@ bool MediaPipeline::initAppsrcPipeline(void* qmlVideoItem) {
 
 // ── Phase 5: URI-based pipeline (uridecodebin) ────────────────────────────────
 
-bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
+bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     // D-04, D-05: URI-based pipeline for DLNA media playback.
     // Pipeline: uridecodebin ! [video: videoconvert ! appsink (or fakesink)]
     //                          [audio: audioconvert ! audioresample ! volume ! autoaudiosink]
@@ -591,11 +591,32 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     GstElement* volume        = gst_element_factory_make("volume",         "uri-volume");
     GstElement* audioSink     = gst_element_factory_make("autoaudiosink",  "uri-audiosink");
 
+    // Decoded video waiting for conversion. Live: keep only the newest two
+    // frames (same as the Miracast pipeline); a file plays every frame.
+    GstElement* videoQueue   = gst_element_factory_make("queue",         "uri-videoqueue");
     GstElement* videoConvert = gst_element_factory_make("videoconvert",  "uri-videoconvert");
-    GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/false);
+    GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/live);
+    useAllCores(videoConvert);
+    if (live && videoQueue) {
+        g_object_set(videoQueue,
+            "max-size-buffers", 2,
+            "max-size-bytes",   0,
+            "max-size-time",    G_GUINT64_CONSTANT(0),
+            "leaky",            2,   // drop oldest
+            nullptr);
+    }
+    if (live && audioSink) {
+        // Play audio as it arrives, like the video (see initMiracastPipeline)
+        g_signal_connect(audioSink, "element-added",
+            G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
+                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
+                    g_object_set(child, "sync", FALSE, nullptr);
+                }
+            }), nullptr);
+    }
 
     if (!pipeline || !uridecodebin || !audioConvert || !audioResample || !volume || !audioSink ||
-        !videoConvert || !videoSink) {
+        !videoQueue || !videoConvert || !videoSink) {
         g_warning("MediaPipeline::initUriPipeline — failed to create one or more GStreamer elements");
         if (pipeline)      gst_object_unref(pipeline);
         if (uridecodebin)  gst_object_unref(uridecodebin);
@@ -603,6 +624,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
         if (audioResample) gst_object_unref(audioResample);
         if (volume)        gst_object_unref(volume);
         if (audioSink)     gst_object_unref(audioSink);
+        if (videoQueue)    gst_object_unref(videoQueue);
         if (videoConvert)  gst_object_unref(videoConvert);
         if (videoSink)     gst_object_unref(videoSink);
         return false;
@@ -611,7 +633,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     // Add all elements to pipeline — uridecodebin is not linked to sinks yet;
     // dynamic pads will be linked via pad-added callback
     gst_bin_add_many(GST_BIN(pipeline),
-        uridecodebin, videoConvert, videoSink,
+        uridecodebin, videoQueue, videoConvert, videoSink,
         audioConvert, audioResample, volume, audioSink,
         nullptr);
 
@@ -623,8 +645,8 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
         return false;
     }
 
-    // Pre-link video chain: videoconvert ! videosink
-    if (!gst_element_link(videoConvert, videoSink)) {
+    // Pre-link video chain: queue ! videoconvert ! videosink
+    if (!gst_element_link_many(videoQueue, videoConvert, videoSink, nullptr)) {
         g_warning("MediaPipeline::initUriPipeline — failed to pre-link video chain");
         gst_object_unref(pipeline);
         return false;
@@ -633,10 +655,10 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
     // Connect pad-added signal on uridecodebin to link audio/video pads dynamically.
     // Payload carries the first elements of each branch's pre-linked chain.
     struct UriPadHelper {
-        GstElement* videoConvert;
+        GstElement* videoIn;      // first element of the video chain
         GstElement* audioConvert;
     };
-    auto* padData = new UriPadHelper{videoConvert, audioConvert};
+    auto* padData = new UriPadHelper{videoQueue, audioConvert};
 
     struct UriPadAddedCallback {
         static void callback(GstElement* /*decodebin*/, GstPad* pad, gpointer data) {
@@ -652,7 +674,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/) {
             gst_caps_unref(padCaps);
 
             if (g_str_has_prefix(mediaType, "video/")) {
-                GstPad* sinkPad = gst_element_get_static_pad(payload->videoConvert, "sink");
+                GstPad* sinkPad = gst_element_get_static_pad(payload->videoIn, "sink");
                 if (sinkPad && !GST_PAD_IS_LINKED(sinkPad)) {
                     if (gst_pad_link(pad, sinkPad) != GST_PAD_LINK_OK) {
                         g_warning("MediaPipeline::initUriPipeline — video pad-added link failed");

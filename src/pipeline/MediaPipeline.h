@@ -78,7 +78,11 @@ public:
     // Phase 5: URI-based pipeline for DLNA media playback (D-04, D-05)
     // Pipeline: uridecodebin ! [video: videoconvert ! appsink → VideoFrameCallback]
     //                          [audio: audioconvert ! audioresample ! volume ! autoaudiosink]
-    bool initUriPipeline(void* qmlVideoItem);
+    // live: a live stream (a screen mirrored over HTTP, Cast LOAD streamType
+    // LIVE): frames and audio are shown as they arrive, and decoded frames the
+    // conversion can't keep up with are dropped, so the delay can't grow. Else
+    // clock-synced playback, as for a media file (DLNA, Cast media).
+    bool initUriPipeline(void* qmlVideoItem, bool live = false);
     void setUri(const std::string& uri);
     void playUri();
     void pauseUri();
