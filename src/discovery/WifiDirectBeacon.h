@@ -98,9 +98,9 @@ public:
 
     // Stops listening for Wi-Fi Direct scans while paused (e.g. while a sender
     // is on screen), and resumes it after. The listen takes the radio off the
-    // station's channel for half of each second: a stream arriving over the
-    // network loses packets meanwhile (measured: 37% of a Windows Miracast
-    // stream on a Raspberry Pi 4, none with the listen paused). The receiver
+    // station's channel 10% of the time, and a stream arriving over the
+    // network loses packets meanwhile (measured with the earlier 50% listen:
+    // 37% of a Windows Miracast stream on a Raspberry Pi 4, none paused). The receiver
     // can't be discovered while paused. Asynchronous.
     void setListenPaused(bool paused);
 

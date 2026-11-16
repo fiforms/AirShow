@@ -439,7 +439,8 @@ struct WifiDirectBeacon::Impl : QObject {
         if (!cfg) return false;
         GVariantBuilder b;
         g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
-        for (const char* key : {"DeviceName", "PrimaryDeviceType", "VendorExtension"}) {
+        for (const char* key : {"DeviceName", "PrimaryDeviceType", "VendorExtension",
+                                "GOIntent"}) {
             if (GVariant* v = g_variant_lookup_value(cfg, key, nullptr)) {
                 if (std::string(key) == "VendorExtension") {
                     v = withoutMiceExtension(v);
@@ -494,6 +495,12 @@ struct WifiDirectBeacon::Impl : QObject {
         g_variant_builder_add(&cfg, "{sv}", "PrimaryDeviceType",
                               bytesVariant(QByteArray::fromHex("00070050f2040001")));
         g_variant_builder_add(&cfg, "{sv}", "VendorExtension", g_variant_builder_end(&ext));
+        // Let the source be group owner: it then hands out the addresses
+        // (this sink only supports the client role). NetworkManager accepts a
+        // request without its own GO intent, so wpa_supplicant's applies: with
+        // the default (7), a source asking with 7 or less (GNOME Network
+        // Displays) made this device the owner, and the group failed.
+        g_variant_builder_add(&cfg, "{sv}", "GOIntent", g_variant_new_uint32(0));
 
         if (!set(ifacePath, kP2PIf, "P2PDeviceConfig", g_variant_builder_end(&cfg), &err))
             return fail("setting P2P device config");
@@ -515,12 +522,16 @@ struct WifiDirectBeacon::Impl : QObject {
         appliedName = deviceName;
         accepting   = true;
 
-        // Listen 500 ms of every 1000 ms so Windows' P2P scan gets probe
-        // responses. Not while in a group or paused (a session is on screen):
+        // Listen 200 ms of every 2000 ms so Windows' P2P scan gets probe
+        // responses. On a single-radio adapter the radio leaves the station's
+        // channel meanwhile and misses what arrives there: multicast (mDNS) is
+        // lost outright. Measured on a Raspberry Pi 4, mDNS queries answered:
+        // 15/30 at 500/1000 ms, 24/30 at 100/1000, 29/30 at 200/2000, 30/30
+        // without listening (fewer channel switches lose less). Not while in a group or paused (a session is on screen):
         // the radio has to stay on its channel.
         if (groupActive || listenPaused) {
             call("ExtendedListen", listenVariant(0, 0), nullptr);
-        } else if (!call("ExtendedListen", listenVariant(500, 1000), &err)) {
+        } else if (!call("ExtendedListen", listenVariant(200, 2000), &err)) {
             return fail("starting P2P listen");
         }
 
@@ -582,7 +593,7 @@ struct WifiDirectBeacon::Impl : QObject {
 
     void onGoNegotiationRequest(const char* peer, guint16 passwordId) {
         if (!accepting) return;
-        QString name = QStringLiteral("Wi-Fi Direct device");
+        QString name;
         if (GVariant* v = peerProperty(peer, "DeviceName")) {
             name = QString::fromUtf8(g_variant_get_string(v, nullptr));
             g_variant_unref(v);
@@ -611,6 +622,10 @@ struct WifiDirectBeacon::Impl : QObject {
         if (GVariant* v = peerProperty(peer, "IEs")) {
             port = parseWfdRtspPort(byteArray(v));
             g_variant_unref(v);
+        }
+        if (name.trimmed().isEmpty()) {
+            // Some sources send no name (GNOME Network Displays)
+            name = QStringLiteral("Wi-Fi Direct device %1").arg(mac);
         }
         pendingPeer   = peer;
         pendingSince  = std::chrono::steady_clock::now();
