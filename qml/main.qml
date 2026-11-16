@@ -24,6 +24,15 @@ Window {
         objectName: "videoItem"
         anchors.fill: parent
         forceAspectRatio: true   // D-01: letterbox — preserve aspect ratio, never stretch
+
+        // A session ended: drop its last frame, so the next sender doesn't
+        // briefly show it before its own first frame arrives
+        Connections {
+            target: connectionBridge
+            function onConnectedChanged(connected) {
+                if (!connected) videoItem.clear()
+            }
+        }
     }
 
     // DISP-03: Idle/waiting screen — visible when no device is connected.

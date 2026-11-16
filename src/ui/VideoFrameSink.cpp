@@ -32,11 +32,31 @@ void VideoFrameSink::pushFrame(const QImage& frame)
     QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
 }
 
+void VideoFrameSink::clear()
+{
+    {
+        QMutexLocker lock(&m_mutex);
+        m_pendingFrame = QImage();
+        m_dirty   = false;
+        m_cleared = true;
+    }
+    QMetaObject::invokeMethod(this, "update", Qt::QueuedConnection);
+}
+
 QSGNode* VideoFrameSink::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 {
     QImage frame;
     {
         QMutexLocker lock(&m_mutex);
+        if (m_cleared && !m_dirty) {
+            // Drop the texture and the node: nothing is drawn. Returning
+            // nullptr makes the scene graph delete oldNode; the texture is
+            // ours (setOwnsTexture(false)).
+            m_cleared = false;
+            if (oldNode) delete static_cast<QSGSimpleTextureNode*>(oldNode)->texture();
+            return nullptr;
+        }
+        m_cleared = false;
         if (!m_dirty || m_pendingFrame.isNull())
             return oldNode;
         frame = m_pendingFrame;
