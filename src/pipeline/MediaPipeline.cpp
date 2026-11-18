@@ -1,4 +1,6 @@
 #include "pipeline/MediaPipeline.h"
+#include <atomic>
+#include <cstring>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
@@ -81,6 +83,22 @@ GstElement* makeH264Decoder(const char* vaapiFactory, const char* name, const ch
         }
     }
     return nullptr;
+}
+
+// uridecodebin "autoplug-select" handler: never use a V4L2 hardware video decoder
+// (Raspberry Pi). Its DMA-buffer frames are read uncached by the CPU RGBA
+// conversion, several times slower than software decode + multi-threaded
+// videoconvert (see makeH264Decoder). Skipping makes decodebin fall back to avdec_*.
+guint skipV4l2VideoDecoder(GstElement*, GstPad*, GstCaps*, GstElementFactory* factory, gpointer) {
+    constexpr guint kAutoplugTry = 0, kAutoplugSkip = 2;  // GstAutoplugSelectResult
+    const gchar* name  = GST_OBJECT_NAME(factory);
+    const gchar* klass = gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_KLASS);
+    if (name && klass && g_str_has_prefix(name, "v4l2") &&
+        strstr(klass, "Decoder") && strstr(klass, "Video")) {
+        g_message("MediaPipeline URI: skipping hardware decoder %s", name);
+        return kAutoplugSkip;
+    }
+    return kAutoplugTry;
 }
 
 // RGBA conversion for the appsink is per-pixel CPU work: use every core.
@@ -367,6 +385,22 @@ GstFlowReturn MediaPipeline::onNewVideoSample(GstAppSink* sink, gpointer userDat
 
             gst_video_frame_unmap(&vframe);
             self->m_videoFrameCallback(std::move(copy));
+
+            // Diagnostics: frame size and the rate frames actually reach the screen.
+            static std::atomic<int>     shown{0};
+            static std::atomic<gint64>  since{0};
+            const gint64 now = g_get_monotonic_time();
+            gint64 start = since.load();
+            if (start == 0 || now - start > 10 * G_USEC_PER_SEC) {   // idle gap: restart
+                since = now; shown = 1;
+            } else {
+                ++shown;
+                if (now - start >= 5 * G_USEC_PER_SEC) {
+                    g_message("Video: %dx%d, %.1f fps shown", w, h,
+                              shown * double(G_USEC_PER_SEC) / double(now - start));
+                    since = now; shown = 0;
+                }
+            }
         }
     }
 
@@ -637,6 +671,18 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     // uridecodebin emits pad-added for each decoded stream — pads are connected
     // dynamically via the same pattern as initAppsrcPipeline.
 
+    // Release any previous URI pipeline first. Senders such as VLC re-send LOAD
+    // repeatedly; overwriting m_uriPipeline would leave the old one playing
+    // (overlapping streams, doubled decode load).
+    if (m_uriPipeline) {
+        gst_element_set_state(m_uriPipeline, GST_STATE_NULL);
+        gst_object_unref(m_uriPipeline);
+        m_uriPipeline  = nullptr;
+        m_uriDecodebin = nullptr;
+        m_uriAudioSink = nullptr;
+        m_uriVolume    = nullptr;
+    }
+
     GstElement* pipeline      = gst_pipeline_new("uri-pipeline");
     GstElement* uridecodebin  = gst_element_factory_make("uridecodebin",   "urisrc");
     GstElement* audioConvert  = gst_element_factory_make("audioconvert",   "uri-audioconvert");
@@ -644,8 +690,12 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     GstElement* volume        = gst_element_factory_make("volume",         "uri-volume");
     GstElement* audioSink     = makeAudioSink("uri-audiosink");
 
-    // Decoded video waiting for conversion. Live: keep only the newest two
-    // frames (same as the Miracast pipeline); a file plays every frame.
+    // Decoded video waiting for conversion. Not leaky, even when live: a sender
+    // such as VLC streams faster than real time (it only slows when we stop
+    // reading), so the decoder runs ahead of the clock; a leaky queue then keeps a
+    // sparse set of far-future frames and the synced sink waits for each one
+    // (measured: 9 frames in 25 s, vs 586 with a blocking queue). Back-pressure
+    // instead paces the sender through TCP.
     GstElement* videoQueue   = gst_element_factory_make("queue",         "uri-videoqueue");
     GstElement* videoConvert = gst_element_factory_make("videoconvert",  "uri-videoconvert");
     GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/live);
@@ -655,17 +705,32 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
             "max-size-buffers", 2,
             "max-size-bytes",   0,
             "max-size-time",    G_GUINT64_CONSTANT(0),
-            "leaky",            2,   // drop oldest
             nullptr);
     }
     if (live && audioSink) {
-        // Play audio as it arrives, like the video (see initMiracastPipeline)
+        // Keep audio clock-synced (it paces the stream) but don't let it wait for
+        // preroll: a live stream may have no audio, which would otherwise leave
+        // the pipeline stuck in PAUSED.
         if (GST_IS_BIN(audioSink)) g_signal_connect(audioSink, "element-added",
             G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
-                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
-                    g_object_set(child, "sync", FALSE, nullptr);
+                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "async")) {
+                    g_object_set(child, "async", FALSE, nullptr);
                 }
             }), nullptr);
+    }
+    if (live && videoSink && uridecodebin) {
+        // Pace video to the stream clock instead of showing frames as they
+        // arrive: a bursty sender (VLC) otherwise makes the picture race ahead of
+        // the audio. Decode + conversion take longer than a frame (the software
+        // decoder alone buffers several frames), so give the pipeline a latency
+        // budget; with none, every frame is "late" at the sink. A realtime sender
+        // that outruns us is caught up by dropping frames more than 500 ms late
+        // (QoS off: upstream skipping is unpredictable); the 1 s decode buffer
+        // bounds the rest.
+        g_object_set(videoSink, "sync", TRUE, "async", FALSE,
+                     "max-lateness", G_GINT64_CONSTANT(500000000), "qos", FALSE, nullptr);
+        g_object_set(uridecodebin, "buffer-duration", G_GINT64_CONSTANT(1000000000), nullptr);
+        gst_pipeline_set_latency(GST_PIPELINE(pipeline), 300 * GST_MSECOND);
     }
 
     if (!pipeline || !uridecodebin || !audioConvert || !audioResample || !volume || !audioSink ||
@@ -748,6 +813,31 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
 
     g_signal_connect(uridecodebin, "pad-added",
                      G_CALLBACK(UriPadAddedCallback::callback), padData);
+
+    // Software decode only on V4L2 platforms — see skipV4l2VideoDecoder.
+    g_signal_connect(uridecodebin, "autoplug-select", G_CALLBACK(skipV4l2VideoDecoder), nullptr);
+
+    // Log errors/warnings (unreachable URL, missing decoder, ...) — otherwise a
+    // failing URI pipeline just sits idle with nothing in the log. Sync handler
+    // (see initMiracastPipeline for why not gst_bus_add_watch).
+    if (GstBus* bus = gst_element_get_bus(pipeline)) {
+        gst_bus_set_sync_handler(bus, [](GstBus*, GstMessage* msg, gpointer) -> GstBusSyncReply {
+            const GstMessageType t = GST_MESSAGE_TYPE(msg);
+            if (t == GST_MESSAGE_ERROR || t == GST_MESSAGE_WARNING) {
+                GError* err = nullptr;
+                gchar*  dbg = nullptr;
+                if (t == GST_MESSAGE_ERROR) gst_message_parse_error(msg, &err, &dbg);
+                else                        gst_message_parse_warning(msg, &err, &dbg);
+                g_warning("URI pipeline %s from %s: %s (%s)",
+                          t == GST_MESSAGE_ERROR ? "error" : "warning",
+                          GST_OBJECT_NAME(msg->src), err ? err->message : "?", dbg ? dbg : "");
+                if (err) g_error_free(err);
+                g_free(dbg);
+            }
+            return GST_BUS_DROP;
+        }, nullptr, nullptr);
+        gst_object_unref(bus);
+    }
 
     m_uriPipeline  = pipeline;
     m_uriDecodebin = uridecodebin;

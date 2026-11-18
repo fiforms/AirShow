@@ -102,7 +102,26 @@ bool CastHandler::canDecode(const std::string& codec) {
     return false;
 }
 
-bool CastHandler::playUrl(const QString& url, bool live) {
+// Senders (VLC) may send an IPv6 literal without brackets, which is not a valid
+// URL: http://fde8::1:8010/x. Bracket it so souphttpsrc can parse the host.
+static QString bracketIpv6Host(const QString& url) {
+    const int schemeEnd = url.indexOf(QStringLiteral("://"));
+    if (schemeEnd < 0) return url;
+    const int hostStart = schemeEnd + 3;
+    int hostEnd = url.indexOf(QLatin1Char('/'), hostStart);
+    if (hostEnd < 0) hostEnd = url.size();
+    const QString authority = url.mid(hostStart, hostEnd - hostStart);
+    if (authority.startsWith(QLatin1Char('[')) || authority.count(QLatin1Char(':')) < 2)
+        return url;  // already bracketed, or hostname/IPv4[:port]
+    const int lastColon = authority.lastIndexOf(QLatin1Char(':'));
+    const QString host = authority.left(lastColon);
+    const QString port = authority.mid(lastColon + 1);
+    return url.left(hostStart) + QLatin1Char('[') + host + QStringLiteral("]:") + port +
+           url.mid(hostEnd);
+}
+
+bool CastHandler::playUrl(const QString& rawUrl, bool live) {
+    const QString url = bracketIpv6Host(rawUrl);
     // Same URI pipeline as DLNA.
     if (!m_pipeline || !m_pipeline->initUriPipeline(nullptr, live)) return false;
     m_pipeline->setUri(url.toStdString());
@@ -110,6 +129,18 @@ bool CastHandler::playUrl(const QString& url, bool live) {
     qDebug("CastHandler: URI pipeline started for '%s'%s", qPrintable(url),
            live ? " (live)" : "");
     return true;
+}
+
+double CastHandler::mediaPosition() {
+    if (!m_pipeline) return -1.0;
+    const gint64 ns = m_pipeline->queryPosition();
+    return ns < 0 ? -1.0 : double(ns) / double(GST_SECOND);
+}
+
+void CastHandler::setPaused(bool paused) {
+    if (!m_pipeline) return;
+    if (paused) m_pipeline->pauseUri();
+    else        m_pipeline->playUri();
 }
 
 bool CastHandler::startStream(const std::string& videoCaps, const std::string& audioCaps) {
@@ -125,7 +156,10 @@ void CastHandler::pushAudioFrame(const uint8_t* data, size_t size) {
 }
 
 void CastHandler::stopStream() {
-    if (m_pipeline) m_pipeline->stopCast();
+    if (m_pipeline) {
+        m_pipeline->stopCast();
+        m_pipeline->stopUri();
+    }
 }
 
 } // namespace airshow

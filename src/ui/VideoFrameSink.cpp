@@ -49,12 +49,13 @@ QSGNode* VideoFrameSink::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
     {
         QMutexLocker lock(&m_mutex);
         if (m_cleared && !m_dirty) {
-            // Drop the texture and the node: nothing is drawn. Returning
-            // nullptr makes the scene graph delete oldNode; the texture is
-            // ours (setOwnsTexture(false)).
+            // Draw nothing, but keep the node and its texture alive: the render
+            // thread may still draw the previous frame's batch, and deleting the
+            // texture under it crashes (QSGTexture::setFiltering on freed memory).
+            // The texture is replaced by the next frame's.
             m_cleared = false;
-            if (oldNode) delete static_cast<QSGSimpleTextureNode*>(oldNode)->texture();
-            return nullptr;
+            if (oldNode) static_cast<QSGSimpleTextureNode*>(oldNode)->setRect(QRectF());
+            return oldNode;
         }
         m_cleared = false;
         if (!m_dirty || m_pendingFrame.isNull())
@@ -70,11 +71,17 @@ QSGNode* VideoFrameSink::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
         node->setOwnsTexture(false);  // We manage texture lifetime explicitly below.
     }
 
-    // Delete old texture before replacing (safe — we're on the render thread).
-    delete node->texture();
-
+    // Create the new texture first: if that fails, keep showing the old one
+    // rather than leaving the node with a null/freed texture.
     QSGTexture* tex = window()->createTextureFromImage(frame,
         QQuickWindow::TextureIsOpaque);
+    if (!tex) {
+        if (node->texture()) return node;
+        delete node;  // brand-new node with nothing to show
+        return nullptr;
+    }
+    // Delete the old texture before replacing (safe — we're on the render thread).
+    delete node->texture();
     node->setTexture(tex);
 
     // Apply letterbox/pillarbox if forceAspectRatio is set.
