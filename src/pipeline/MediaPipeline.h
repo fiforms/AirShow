@@ -79,9 +79,10 @@ public:
     // Pipeline: uridecodebin ! [video: videoconvert ! appsink → VideoFrameCallback]
     //                          [audio: audioconvert ! audioresample ! volume ! autoaudiosink]
     // live: a live stream (a screen mirrored over HTTP, Cast LOAD streamType
-    // LIVE): clock-synced like a file with a 300 ms latency budget, and the
-    // decode buffer is bounded to ~1 s, so the delay can't grow and a bursty
-    // sender can't make the picture race ahead of the audio. Not live: plain
+    // LIVE): clock-synced like a file with a 300 ms latency budget, late video
+    // frames (>500 ms) dropped, and the decode buffer bounded to ~1 s. A sender
+    // that streams faster than real time (VLC) is paced by back-pressure, so the
+    // picture can't race ahead of the audio. Not live: plain
     // clock-synced playback (DLNA, Cast media).
     bool initUriPipeline(void* qmlVideoItem, bool live = false);
     void setUri(const std::string& uri);

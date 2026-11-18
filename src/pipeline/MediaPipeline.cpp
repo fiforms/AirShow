@@ -690,8 +690,12 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     GstElement* volume        = gst_element_factory_make("volume",         "uri-volume");
     GstElement* audioSink     = makeAudioSink("uri-audiosink");
 
-    // Decoded video waiting for conversion. Live: keep only the newest two
-    // frames (same as the Miracast pipeline); a file plays every frame.
+    // Decoded video waiting for conversion. Not leaky, even when live: a sender
+    // such as VLC streams faster than real time (it only slows when we stop
+    // reading), so the decoder runs ahead of the clock; a leaky queue then keeps a
+    // sparse set of far-future frames and the synced sink waits for each one
+    // (measured: 9 frames in 25 s, vs 586 with a blocking queue). Back-pressure
+    // instead paces the sender through TCP.
     GstElement* videoQueue   = gst_element_factory_make("queue",         "uri-videoqueue");
     GstElement* videoConvert = gst_element_factory_make("videoconvert",  "uri-videoconvert");
     GstElement* videoSink    = createVideoSink("uri-videosink", /*realtime=*/live);
@@ -701,7 +705,6 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
             "max-size-buffers", 2,
             "max-size-bytes",   0,
             "max-size-time",    G_GUINT64_CONSTANT(0),
-            "leaky",            2,   // drop oldest
             nullptr);
     }
     if (live && audioSink) {
@@ -720,11 +723,12 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
         // arrive: a bursty sender (VLC) otherwise makes the picture race ahead of
         // the audio. Decode + conversion take longer than a frame (the software
         // decoder alone buffers several frames), so give the pipeline a latency
-        // budget; with none, every frame is "late" at the sink. Never drop on
-        // lateness or via QoS (that skipped nearly all frames): the leaky
-        // two-frame queue and the 1 s decode buffer keep the delay bounded.
+        // budget; with none, every frame is "late" at the sink. A realtime sender
+        // that outruns us is caught up by dropping frames more than 500 ms late
+        // (QoS off: upstream skipping is unpredictable); the 1 s decode buffer
+        // bounds the rest.
         g_object_set(videoSink, "sync", TRUE, "async", FALSE,
-                     "max-lateness", G_GINT64_CONSTANT(-1), "qos", FALSE, nullptr);
+                     "max-lateness", G_GINT64_CONSTANT(500000000), "qos", FALSE, nullptr);
         g_object_set(uridecodebin, "buffer-duration", G_GINT64_CONSTANT(1000000000), nullptr);
         gst_pipeline_set_latency(GST_PIPELINE(pipeline), 300 * GST_MSECOND);
     }
