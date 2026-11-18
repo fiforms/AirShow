@@ -9,7 +9,59 @@
 #include <cstdlib>
 #include <string>
 
+#include <mutex>
+
 namespace airshow {
+
+namespace {
+// True if autoaudiosink can actually play: probes once with a one-buffer
+// audiotestsrc pipeline taken to PAUSED. Machines without an audio stack (headless
+// servers, CI runners) fail here; a failing sink would otherwise error whole
+// pipelines, video included. AIRSHOW_NULL_AUDIO_SINK forces "no audio".
+bool audioOutputUsable() {
+    static const bool usable = [] {
+        if (g_getenv("AIRSHOW_NULL_AUDIO_SINK")) return false;
+        GstElement* p   = gst_pipeline_new("audio-probe");
+        GstElement* src = gst_element_factory_make("audiotestsrc", nullptr);
+        GstElement* snk = gst_element_factory_make("autoaudiosink", nullptr);
+        if (!p || !src || !snk) {
+            if (p) gst_object_unref(p);
+            if (src) gst_object_unref(src);
+            if (snk) gst_object_unref(snk);
+            return false;
+        }
+        g_object_set(src, "num-buffers", 1, nullptr);
+        gst_bin_add_many(GST_BIN(p), src, snk, nullptr);
+        bool ok = gst_element_link(src, snk) &&
+                  gst_element_set_state(p, GST_STATE_PAUSED) != GST_STATE_CHANGE_FAILURE;
+        if (ok) {
+            GstBus* bus = gst_element_get_bus(p);
+            GstMessage* m = gst_bus_timed_pop_filtered(bus, 2 * GST_SECOND,
+                GstMessageType(GST_MESSAGE_ASYNC_DONE | GST_MESSAGE_ERROR));
+            ok = m && GST_MESSAGE_TYPE(m) == GST_MESSAGE_ASYNC_DONE;
+            if (m) gst_message_unref(m);
+            gst_object_unref(bus);
+        }
+        gst_element_set_state(p, GST_STATE_NULL);
+        gst_object_unref(p);
+        return ok;
+    }();
+    return usable;
+}
+
+// autoaudiosink, or a fakesink (with a one-time log line) when there is no usable
+// audio output, so a machine without audio still shows video.
+GstElement* makeAudioSink(const char* name) {
+    if (audioOutputUsable()) return gst_element_factory_make("autoaudiosink", name);
+    static std::once_flag once;
+    std::call_once(once, [] {
+        g_message("MediaPipeline: no usable audio output — audio will be discarded");
+    });
+    GstElement* fake = gst_element_factory_make("fakesink", name);
+    if (fake) g_object_set(fake, "sync", FALSE, "async", FALSE, nullptr);
+    return fake;
+}
+}  // namespace
 
 namespace {
 // H.264 decoder for live mirroring: VA-API hardware decode (Intel/AMD GPUs;
@@ -61,7 +113,7 @@ bool MediaPipeline::init(void* /*qmlVideoItem*/) {
     GstElement* videoSink    = createVideoSink("videosink", /*realtime=*/false);
     GstElement* audioSrc     = gst_element_factory_make("audiotestsrc",  "audiosrc");
     GstElement* audioConvert = gst_element_factory_make("audioconvert",  "audioconvert");
-    GstElement* audioSink    = gst_element_factory_make("autoaudiosink", "audiosink");
+    GstElement* audioSink    = makeAudioSink("audiosink");
 
     if (!pipeline || !videoSrc || !videoConvert || !videoSink ||
         !audioSrc || !audioConvert || !audioSink) {
@@ -230,7 +282,8 @@ void MediaPipeline::setMuted(bool muted) {
     // This preserves A/V sync — critical per PITFALLS.md.
     m_muted = muted;
     if (m_audioSink) {
-        g_object_set(m_audioSink, "volume", muted ? 0.0 : 1.0, nullptr);
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(m_audioSink), "volume"))
+            g_object_set(m_audioSink, "volume", muted ? 0.0 : 1.0, nullptr);
     }
     // Phase 5: Also mute the URI pipeline volume element if active
     if (m_uriVolume) {
@@ -394,7 +447,7 @@ bool MediaPipeline::initAppsrcPipeline(void* qmlVideoItem) {
     GstElement* audioDecode   = gst_element_factory_make("decodebin",      "audiodecode");
     GstElement* audioConvert  = gst_element_factory_make("audioconvert",   "audioconvert");
     GstElement* audioResample = gst_element_factory_make("audioresample",  "audioresample");
-    GstElement* audioSink     = gst_element_factory_make("autoaudiosink",  "audiosink");
+    GstElement* audioSink     = makeAudioSink("audiosink");
 
     // Configure queues for live screen mirroring — leaky=2 drops oldest when full so
     // we always display the latest frame rather than blocking the entire pipeline.
@@ -542,7 +595,7 @@ bool MediaPipeline::initAppsrcPipeline(void* qmlVideoItem) {
     // gets stuck in PAUSED forever when audio decodebin has no caps yet.
     // autoaudiosink itself has no "async" property — must set it on the child sink
     // via "element-added" signal, which fires when the real sink is created.
-    g_signal_connect(audioSink, "element-added",
+    if (GST_IS_BIN(audioSink)) g_signal_connect(audioSink, "element-added",
         G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
             g_object_set(child, "async", FALSE, "sync", FALSE, nullptr);
         }), nullptr);
@@ -589,7 +642,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     GstElement* audioConvert  = gst_element_factory_make("audioconvert",   "uri-audioconvert");
     GstElement* audioResample = gst_element_factory_make("audioresample",  "uri-audioresample");
     GstElement* volume        = gst_element_factory_make("volume",         "uri-volume");
-    GstElement* audioSink     = gst_element_factory_make("autoaudiosink",  "uri-audiosink");
+    GstElement* audioSink     = makeAudioSink("uri-audiosink");
 
     // Decoded video waiting for conversion. Live: keep only the newest two
     // frames (same as the Miracast pipeline); a file plays every frame.
@@ -607,7 +660,7 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     }
     if (live && audioSink) {
         // Play audio as it arrives, like the video (see initMiracastPipeline)
-        g_signal_connect(audioSink, "element-added",
+        if (GST_IS_BIN(audioSink)) g_signal_connect(audioSink, "element-added",
             G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
                 if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
                     g_object_set(child, "sync", FALSE, nullptr);
@@ -761,7 +814,8 @@ void MediaPipeline::setVolume(double volume) {
     }
     // Also set on appsrc pipeline audio sink if active (for consistency)
     if (m_audioSink) {
-        g_object_set(m_audioSink, "volume", volume, nullptr);
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(m_audioSink), "volume"))
+            g_object_set(m_audioSink, "volume", volume, nullptr);
     }
 }
 
@@ -946,7 +1000,7 @@ bool MediaPipeline::initCastPipeline(const std::string& videoCaps, const std::st
         GstElement* decode   = gst_element_factory_make("decodebin", "cast-audio-decode");
         GstElement* convert  = gst_element_factory_make("audioconvert", "cast-audioconvert");
         GstElement* resample = gst_element_factory_make("audioresample", "cast-audioresample");
-        GstElement* sink     = gst_element_factory_make("autoaudiosink", "cast-audiosink");
+        GstElement* sink     = makeAudioSink("cast-audiosink");
         if (!audioSrc || !queue || !decode || !convert || !resample || !sink) {
             for (GstElement* e : {audioSrc, queue, decode, convert, resample, sink})
                 if (e) gst_object_unref(e);
@@ -963,7 +1017,7 @@ bool MediaPipeline::initCastPipeline(const std::string& videoCaps, const std::st
                               GConnectFlags(0));
         // Same as the AirPlay pipeline: the real audio sink inside autoaudiosink must not
         // wait for preroll, or the live pipeline stalls in PAUSED.
-        g_signal_connect(sink, "element-added",
+        if (GST_IS_BIN(sink)) g_signal_connect(sink, "element-added",
             G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
                 if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "async"))
                     g_object_set(child, "async", FALSE, "sync", FALSE, nullptr);
@@ -1074,7 +1128,7 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     GstElement* audioDecode   = gst_element_factory_make("decodebin",    "mir-audiodecode");
     GstElement* audioConvert  = gst_element_factory_make("audioconvert", "mir-audioconvert");
     GstElement* audioResample = gst_element_factory_make("audioresample","mir-audioresample");
-    GstElement* audioSink     = gst_element_factory_make("autoaudiosink","mir-audiosink");
+    GstElement* audioSink     = makeAudioSink("mir-audiosink");
 
     // Verify all mandatory elements were created
     const bool allCreated = pipeline && udpsrc && jitterbuf && rtpmp2tdepay && tsparse && tsdemux &&
@@ -1140,12 +1194,14 @@ bool MediaPipeline::initMiracastPipeline(void* /*qmlVideoItem*/, int udpPort, bo
     // ~1 s, Windows 11 and Samsung Smart View), so it played that far behind
     // the picture and the audio queue sat full, dropping audio.
     // autoaudiosink creates the real sink as a child: set it there.
-    g_signal_connect(audioSink, "element-added",
-        G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
-            if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
-                g_object_set(child, "sync", FALSE, nullptr);
-            }
-        }), nullptr);
+    if (GST_IS_BIN(audioSink)) {
+        g_signal_connect(audioSink, "element-added",
+            G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
+                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
+                    g_object_set(child, "sync", FALSE, nullptr);
+                }
+            }), nullptr);
+    }
 
     // Add all elements to the pipeline bin before linking
     gst_bin_add_many(GST_BIN(pipeline),
