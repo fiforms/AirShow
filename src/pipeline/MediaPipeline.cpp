@@ -1,4 +1,5 @@
 #include "pipeline/MediaPipeline.h"
+#include <cstring>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
@@ -81,6 +82,22 @@ GstElement* makeH264Decoder(const char* vaapiFactory, const char* name, const ch
         }
     }
     return nullptr;
+}
+
+// uridecodebin "autoplug-select" handler: never use a V4L2 hardware video decoder
+// (Raspberry Pi). Its DMA-buffer frames are read uncached by the CPU RGBA
+// conversion, several times slower than software decode + multi-threaded
+// videoconvert (see makeH264Decoder). Skipping makes decodebin fall back to avdec_*.
+guint skipV4l2VideoDecoder(GstElement*, GstPad*, GstCaps*, GstElementFactory* factory, gpointer) {
+    constexpr guint kAutoplugTry = 0, kAutoplugSkip = 2;  // GstAutoplugSelectResult
+    const gchar* name  = GST_OBJECT_NAME(factory);
+    const gchar* klass = gst_element_factory_get_metadata(factory, GST_ELEMENT_METADATA_KLASS);
+    if (name && klass && g_str_has_prefix(name, "v4l2") &&
+        strstr(klass, "Decoder") && strstr(klass, "Video")) {
+        g_message("MediaPipeline URI: skipping hardware decoder %s", name);
+        return kAutoplugSkip;
+    }
+    return kAutoplugTry;
 }
 
 // RGBA conversion for the appsink is per-pixel CPU work: use every core.
@@ -760,6 +777,9 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
 
     g_signal_connect(uridecodebin, "pad-added",
                      G_CALLBACK(UriPadAddedCallback::callback), padData);
+
+    // Software decode only on V4L2 platforms — see skipV4l2VideoDecoder.
+    g_signal_connect(uridecodebin, "autoplug-select", G_CALLBACK(skipV4l2VideoDecoder), nullptr);
 
     // Log errors/warnings (unreachable URL, missing decoder, ...) — otherwise a
     // failing URI pipeline just sits idle with nothing in the log. Sync handler
