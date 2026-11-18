@@ -1,4 +1,5 @@
 #include "pipeline/MediaPipeline.h"
+#include <atomic>
 #include <cstring>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -384,6 +385,22 @@ GstFlowReturn MediaPipeline::onNewVideoSample(GstAppSink* sink, gpointer userDat
 
             gst_video_frame_unmap(&vframe);
             self->m_videoFrameCallback(std::move(copy));
+
+            // Diagnostics: frame size and the rate frames actually reach the screen.
+            static std::atomic<int>     shown{0};
+            static std::atomic<gint64>  since{0};
+            const gint64 now = g_get_monotonic_time();
+            gint64 start = since.load();
+            if (start == 0 || now - start > 10 * G_USEC_PER_SEC) {   // idle gap: restart
+                since = now; shown = 1;
+            } else {
+                ++shown;
+                if (now - start >= 5 * G_USEC_PER_SEC) {
+                    g_message("Video: %dx%d, %.1f fps shown", w, h,
+                              shown * double(G_USEC_PER_SEC) / double(now - start));
+                    since = now; shown = 0;
+                }
+            }
         }
     }
 
