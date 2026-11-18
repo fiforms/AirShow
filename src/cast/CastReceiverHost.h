@@ -50,6 +50,9 @@ public:
     // currentTime), or -1 if unknown.
     virtual double mediaPosition() { return -1.0; }
 
+    // Pause / resume the stream started by playUrl() (Cast PAUSE / PLAY).
+    virtual void setPaused(bool /*paused*/) {}
+
     // Cast Streaming (mirroring). startStream() is given GStreamer-style caps for
     // the selected streams (empty when that kind is absent); then decrypted,
     // reassembled frames arrive via push*Frame(); stopStream() ends it.

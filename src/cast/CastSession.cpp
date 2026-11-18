@@ -426,9 +426,17 @@ void CastSession::onMedia(const CastMessage& msg) {
         // and re-send LOAD.
         sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
 
-    } else if (type == QStringLiteral("PLAY") || type == QStringLiteral("PAUSE") ||
-               type == QStringLiteral("SEEK")) {
-        // A live stream can't be paused or seeked: acknowledge with the real state.
+    } else if (type == QStringLiteral("PAUSE") || type == QStringLiteral("PLAY")) {
+        // Only while something is loaded and not already stopped.
+        if (m_mediaSessionId != 0 && m_playerState != QLatin1String("IDLE")) {
+            const bool pause = type == QStringLiteral("PAUSE");
+            if (m_host) m_host->setPaused(pause);
+            m_playerState = pause ? QStringLiteral("PAUSED") : QStringLiteral("PLAYING");
+        }
+        sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
+
+    } else if (type == QStringLiteral("SEEK")) {
+        // A stream can't be seeked in place: senders re-LOAD at the new position.
         sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
 
     } else if (type == QStringLiteral("STOP")) {
@@ -510,7 +518,7 @@ void CastSession::sendMediaStatus(const QString& dest, int requestId) {
         if (pos < 0) pos = m_playClock.isValid() ? m_playClock.elapsed() / 1000.0 : 0.0;
         st[QStringLiteral("currentTime")]    = m_mediaStart + pos;
         st[QStringLiteral("playbackRate")]   = 1;
-        st[QStringLiteral("supportedMediaCommands")] = 0;  // no pause/seek on a live stream
+        st[QStringLiteral("supportedMediaCommands")] = 1;  // PAUSE only; seeking is a re-LOAD
         st[QStringLiteral("volume")] = QJsonObject{{QStringLiteral("level"), 1.0},
                                                    {QStringLiteral("muted"), false}};
         st[QStringLiteral("media")] = m_media;

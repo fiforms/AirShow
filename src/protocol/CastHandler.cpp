@@ -137,6 +137,12 @@ double CastHandler::mediaPosition() {
     return ns < 0 ? -1.0 : double(ns) / double(GST_SECOND);
 }
 
+void CastHandler::setPaused(bool paused) {
+    if (!m_pipeline) return;
+    if (paused) m_pipeline->pauseUri();
+    else        m_pipeline->playUri();
+}
+
 bool CastHandler::startStream(const std::string& videoCaps, const std::string& audioCaps) {
     return m_pipeline && m_pipeline->initCastPipeline(videoCaps, audioCaps);
 }
