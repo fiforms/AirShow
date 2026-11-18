@@ -563,7 +563,8 @@ void CastSession::onWebrtc(const CastMessage& msg) {
 }
 
 void CastSession::stopStreaming() {
-    if (!m_streaming) return;
+    // A connected session may also be playing a LOAD'd URL (no m_streaming).
+    if (!m_streaming && !m_didConnect) return;
     m_streaming.reset();
     if (m_host) m_host->stopStream();
 }

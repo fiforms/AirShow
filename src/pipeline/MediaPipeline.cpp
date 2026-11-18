@@ -637,6 +637,18 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     // uridecodebin emits pad-added for each decoded stream — pads are connected
     // dynamically via the same pattern as initAppsrcPipeline.
 
+    // Release any previous URI pipeline first. Senders such as VLC re-send LOAD
+    // repeatedly; overwriting m_uriPipeline would leave the old one playing
+    // (overlapping streams, doubled decode load).
+    if (m_uriPipeline) {
+        gst_element_set_state(m_uriPipeline, GST_STATE_NULL);
+        gst_object_unref(m_uriPipeline);
+        m_uriPipeline  = nullptr;
+        m_uriDecodebin = nullptr;
+        m_uriAudioSink = nullptr;
+        m_uriVolume    = nullptr;
+    }
+
     GstElement* pipeline      = gst_pipeline_new("uri-pipeline");
     GstElement* uridecodebin  = gst_element_factory_make("uridecodebin",   "urisrc");
     GstElement* audioConvert  = gst_element_factory_make("audioconvert",   "uri-audioconvert");
@@ -748,6 +760,28 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
 
     g_signal_connect(uridecodebin, "pad-added",
                      G_CALLBACK(UriPadAddedCallback::callback), padData);
+
+    // Log errors/warnings (unreachable URL, missing decoder, ...) — otherwise a
+    // failing URI pipeline just sits idle with nothing in the log. Sync handler
+    // (see initMiracastPipeline for why not gst_bus_add_watch).
+    if (GstBus* bus = gst_element_get_bus(pipeline)) {
+        gst_bus_set_sync_handler(bus, [](GstBus*, GstMessage* msg, gpointer) -> GstBusSyncReply {
+            const GstMessageType t = GST_MESSAGE_TYPE(msg);
+            if (t == GST_MESSAGE_ERROR || t == GST_MESSAGE_WARNING) {
+                GError* err = nullptr;
+                gchar*  dbg = nullptr;
+                if (t == GST_MESSAGE_ERROR) gst_message_parse_error(msg, &err, &dbg);
+                else                        gst_message_parse_warning(msg, &err, &dbg);
+                g_warning("URI pipeline %s from %s: %s (%s)",
+                          t == GST_MESSAGE_ERROR ? "error" : "warning",
+                          GST_OBJECT_NAME(msg->src), err ? err->message : "?", dbg ? dbg : "");
+                if (err) g_error_free(err);
+                g_free(dbg);
+            }
+            return GST_BUS_DROP;
+        }, nullptr, nullptr);
+        gst_object_unref(bus);
+    }
 
     m_uriPipeline  = pipeline;
     m_uriDecodebin = uridecodebin;
