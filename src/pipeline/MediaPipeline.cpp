@@ -718,11 +718,15 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
     if (live && videoSink && uridecodebin) {
         // Pace video to the stream clock instead of showing frames as they
         // arrive: a bursty sender (VLC) otherwise makes the picture race ahead of
-        // the audio. Frames more than 100 ms late are dropped, and the decode
-        // buffer is bounded (below), so the delay still can't grow.
+        // the audio. Decode + conversion take longer than a frame (the software
+        // decoder alone buffers several frames), so give the pipeline a latency
+        // budget; with none, every frame is "late" at the sink. Never drop on
+        // lateness or via QoS (that skipped nearly all frames): the leaky
+        // two-frame queue and the 1 s decode buffer keep the delay bounded.
         g_object_set(videoSink, "sync", TRUE, "async", FALSE,
-                     "max-lateness", G_GINT64_CONSTANT(100000000), "qos", TRUE, nullptr);
+                     "max-lateness", G_GINT64_CONSTANT(-1), "qos", FALSE, nullptr);
         g_object_set(uridecodebin, "buffer-duration", G_GINT64_CONSTANT(1000000000), nullptr);
+        gst_pipeline_set_latency(GST_PIPELINE(pipeline), 300 * GST_MSECOND);
     }
 
     if (!pipeline || !uridecodebin || !audioConvert || !audioResample || !volume || !audioSink ||
