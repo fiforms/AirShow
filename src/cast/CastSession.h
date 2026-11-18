@@ -4,6 +4,7 @@
 #pragma once
 #include <QObject>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QString>
 #include <QJsonObject>
 #include <cstdint>
@@ -147,6 +148,8 @@ private:
     QJsonObject m_media;                      // media object of the current LOAD
     QString     m_playerState         = QStringLiteral("IDLE");
     QString     m_idleReason;                 // set while IDLE after a LOAD
+    double      m_mediaStart          = 0.0;  // LOAD's currentTime (where in the media we began)
+    QElapsedTimer m_playClock;                // fallback when the host can't report a position
 
     // Active Cast Streaming session (created on OFFER)
     std::unique_ptr<CastStreamingReceiver> m_streaming;

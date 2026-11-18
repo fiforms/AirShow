@@ -46,6 +46,10 @@ public:
     // HTTP): show it as it arrives rather than clock-synced like a media file.
     virtual bool playUrl(const QString& url, bool live) = 0;
 
+    // Seconds into the stream started by playUrl() (what MEDIA_STATUS reports as
+    // currentTime), or -1 if unknown.
+    virtual double mediaPosition() { return -1.0; }
+
     // Cast Streaming (mirroring). startStream() is given GStreamer-style caps for
     // the selected streams (empty when that kind is absent); then decrypted,
     // reassembled frames arrive via push*Frame(); stopStream() ends it.

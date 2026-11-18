@@ -468,6 +468,9 @@ void CastSession::onMedia(const CastMessage& msg) {
         const bool started = m_host && m_host->playUrl(contentId, live);
         m_mediaSessionId = ++m_mediaSessionCounter;
         m_media          = mediaObj;
+        m_mediaStart     = json.value(QStringLiteral("currentTime")).toDouble(0.0);
+        m_playClock.start();
+        qDebug("CastSession: LOAD media session %d starts at %.1f s", m_mediaSessionId, m_mediaStart);
         if (!started) {
             qWarning("CastSession: host could not play '%s'", qPrintable(contentId));
             m_playerState = QStringLiteral("IDLE");
@@ -489,6 +492,8 @@ void CastSession::onMedia(const CastMessage& msg) {
         sendMediaStatus(dest, requestId);
         m_playerState = QStringLiteral("PLAYING");
         sendMediaStatus(dest, 0);
+    } else {
+        qDebug("CastSession: media message '%s' ignored", qPrintable(type));
     }
 }
 
@@ -500,7 +505,10 @@ void CastSession::sendMediaStatus(const QString& dest, int requestId) {
         st[QStringLiteral("playerState")]    = m_playerState;
         if (m_playerState == QLatin1String("IDLE") && !m_idleReason.isEmpty())
             st[QStringLiteral("idleReason")] = m_idleReason;
-        st[QStringLiteral("currentTime")]    = 0.0;
+        // Where playback is in the media: senders (VLC) place their clock by this.
+        double pos = m_host ? m_host->mediaPosition() : -1.0;
+        if (pos < 0) pos = m_playClock.isValid() ? m_playClock.elapsed() / 1000.0 : 0.0;
+        st[QStringLiteral("currentTime")]    = m_mediaStart + pos;
         st[QStringLiteral("playbackRate")]   = 1;
         st[QStringLiteral("supportedMediaCommands")] = 0;  // no pause/seek on a live stream
         st[QStringLiteral("volume")] = QJsonObject{{QStringLiteral("level"), 1.0},

@@ -131,6 +131,12 @@ bool CastHandler::playUrl(const QString& rawUrl, bool live) {
     return true;
 }
 
+double CastHandler::mediaPosition() {
+    if (!m_pipeline) return -1.0;
+    const gint64 ns = m_pipeline->queryPosition();
+    return ns < 0 ? -1.0 : double(ns) / double(GST_SECOND);
+}
+
 bool CastHandler::startStream(const std::string& videoCaps, const std::string& audioCaps) {
     return m_pipeline && m_pipeline->initCastPipeline(videoCaps, audioCaps);
 }
