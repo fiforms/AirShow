@@ -120,15 +120,11 @@ jobs:
 
   debian:
     name: Debian package (trixie, ${{ matrix.arch }})
-    if: ${{ !inputs.arm64_only || matrix.arch == 'arm64' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: arm64     # Raspberry Pi OS (64-bit)
-            runner: ubuntu-24.04-arm
-          - arch: amd64
-            runner: ubuntu-24.04
+        # arm64 = Raspberry Pi OS (64-bit). arm64_only (manual run) skips amd64.
+        include: ${{ fromJSON(inputs.arm64_only && '[{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"arch":"arm64","runner":"ubuntu-24.04-arm"},{"arch":"amd64","runner":"ubuntu-24.04"}]') }}
     runs-on: ${{ matrix.runner }}
     container: debian:trixie
     steps:
