@@ -688,13 +688,24 @@ bool MediaPipeline::initUriPipeline(void* /*qmlVideoItem*/, bool live) {
             nullptr);
     }
     if (live && audioSink) {
-        // Play audio as it arrives, like the video (see initMiracastPipeline)
+        // Keep audio clock-synced (it paces the stream) but don't let it wait for
+        // preroll: a live stream may have no audio, which would otherwise leave
+        // the pipeline stuck in PAUSED.
         if (GST_IS_BIN(audioSink)) g_signal_connect(audioSink, "element-added",
             G_CALLBACK(+[](GstBin*, GstElement* child, gpointer) {
-                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "sync")) {
-                    g_object_set(child, "sync", FALSE, nullptr);
+                if (g_object_class_find_property(G_OBJECT_GET_CLASS(child), "async")) {
+                    g_object_set(child, "async", FALSE, nullptr);
                 }
             }), nullptr);
+    }
+    if (live && videoSink && uridecodebin) {
+        // Pace video to the stream clock instead of showing frames as they
+        // arrive: a bursty sender (VLC) otherwise makes the picture race ahead of
+        // the audio. Frames more than 100 ms late are dropped, and the decode
+        // buffer is bounded (below), so the delay still can't grow.
+        g_object_set(videoSink, "sync", TRUE, "async", FALSE,
+                     "max-lateness", G_GINT64_CONSTANT(100000000), "qos", TRUE, nullptr);
+        g_object_set(uridecodebin, "buffer-duration", G_GINT64_CONSTANT(1000000000), nullptr);
     }
 
     if (!pipeline || !uridecodebin || !audioConvert || !audioResample || !volume || !audioSink ||
