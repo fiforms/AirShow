@@ -396,6 +396,9 @@ void CastSession::onReceiver(const CastMessage& msg) {
         m_launchedAppId.clear();
         qDebug("CastSession: STOP — app stopped");
         stopStreaming();
+        m_mediaSessionId = 0;
+        m_media = QJsonObject();
+        m_playerState = QStringLiteral("IDLE");
 
         QByteArray status = buildReceiverStatus(requestId);
         CastMessage reply = makeJsonMsg(
@@ -419,19 +422,28 @@ void CastSession::onMedia(const CastMessage& msg) {
     int requestId = json.value(QStringLiteral("requestId")).toInt(0);
 
     if (type == QStringLiteral("GET_STATUS")) {
-        // Reply with empty media status
-        QJsonObject status;
-        status[QStringLiteral("type")] = QStringLiteral("MEDIA_STATUS");
-        status[QStringLiteral("status")] = QJsonArray();
-        status[QStringLiteral("requestId")] = requestId;
+        // Report the loaded media, so the sender doesn't think nothing is playing
+        // and re-send LOAD.
+        sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
 
-        QByteArray payload = QJsonDocument(status).toJson(QJsonDocument::Compact);
-        CastMessage reply = makeJsonMsg(
-            m_transportId,
-            QString::fromStdString(msg.source_id()),
-            QStringLiteral("urn:x-cast:com.google.cast.media"),
-            payload);
-        sendMessage(reply);
+    } else if (type == QStringLiteral("PAUSE") || type == QStringLiteral("PLAY")) {
+        // Only while something is loaded and not already stopped.
+        if (m_mediaSessionId != 0 && m_playerState != QLatin1String("IDLE")) {
+            const bool pause = type == QStringLiteral("PAUSE");
+            if (m_host) m_host->setPaused(pause);
+            m_playerState = pause ? QStringLiteral("PAUSED") : QStringLiteral("PLAYING");
+        }
+        sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
+
+    } else if (type == QStringLiteral("SEEK")) {
+        // A stream can't be seeked in place: senders re-LOAD at the new position.
+        sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
+
+    } else if (type == QStringLiteral("STOP")) {
+        stopStreaming();
+        m_playerState = QStringLiteral("IDLE");
+        m_idleReason  = QStringLiteral("CANCELLED");
+        sendMediaStatus(QString::fromStdString(msg.source_id()), requestId);
 
     } else if (type == QStringLiteral("LOAD")) {
         // Content URL from media.contentUrl, else media.contentId (D-10)
@@ -460,30 +472,65 @@ void CastSession::onMedia(const CastMessage& msg) {
 
         const bool live = mediaObj.value(QStringLiteral("streamType")).toString() ==
                           QLatin1String("LIVE");
-        if (!m_host || !m_host->playUrl(contentId, live))
+        const QString dest = QString::fromStdString(msg.source_id());
+        const bool started = m_host && m_host->playUrl(contentId, live);
+        m_mediaSessionId = ++m_mediaSessionCounter;
+        m_media          = mediaObj;
+        m_mediaStart     = json.value(QStringLiteral("currentTime")).toDouble(0.0);
+        m_playClock.start();
+        qDebug("CastSession: LOAD media session %d starts at %.1f s", m_mediaSessionId, m_mediaStart);
+        if (!started) {
             qWarning("CastSession: host could not play '%s'", qPrintable(contentId));
+            m_playerState = QStringLiteral("IDLE");
+            m_idleReason  = QStringLiteral("ERROR");
+            QJsonObject failed;
+            failed[QStringLiteral("type")]      = QStringLiteral("LOAD_FAILED");
+            failed[QStringLiteral("requestId")] = requestId;
+            sendMessage(makeJsonMsg(m_transportId, dest,
+                QStringLiteral("urn:x-cast:com.google.cast.media"),
+                QJsonDocument(failed).toJson(QJsonDocument::Compact)));
+            return;
+        }
 
-        // Reply with MEDIA_STATUS: BUFFERING state
-        int mediaSessionId = static_cast<int>(QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF);
-
-        QJsonObject mediaStatus;
-        mediaStatus[QStringLiteral("mediaSessionId")] = mediaSessionId;
-        mediaStatus[QStringLiteral("playerState")] = QStringLiteral("BUFFERING");
-        mediaStatus[QStringLiteral("media")] = mediaObj;
-
-        QJsonObject statusReply;
-        statusReply[QStringLiteral("type")] = QStringLiteral("MEDIA_STATUS");
-        statusReply[QStringLiteral("requestId")] = requestId;
-        statusReply[QStringLiteral("status")] = QJsonArray{mediaStatus};
-
-        QByteArray payload = QJsonDocument(statusReply).toJson(QJsonDocument::Compact);
-        CastMessage reply = makeJsonMsg(
-            m_transportId,
-            QString::fromStdString(msg.source_id()),
-            QStringLiteral("urn:x-cast:com.google.cast.media"),
-            payload);
-        sendMessage(reply);
+        // BUFFERING (answers the LOAD), then PLAYING: the stream is already
+        // being fetched, and the sender waits for PLAYING before it stops
+        // re-sending LOAD.
+        m_playerState = QStringLiteral("BUFFERING");
+        m_idleReason.clear();
+        sendMediaStatus(dest, requestId);
+        m_playerState = QStringLiteral("PLAYING");
+        sendMediaStatus(dest, 0);
+    } else {
+        qDebug("CastSession: media message '%s' ignored", qPrintable(type));
     }
+}
+
+void CastSession::sendMediaStatus(const QString& dest, int requestId) {
+    QJsonArray list;
+    if (m_mediaSessionId != 0) {
+        QJsonObject st;
+        st[QStringLiteral("mediaSessionId")] = m_mediaSessionId;
+        st[QStringLiteral("playerState")]    = m_playerState;
+        if (m_playerState == QLatin1String("IDLE") && !m_idleReason.isEmpty())
+            st[QStringLiteral("idleReason")] = m_idleReason;
+        // Where playback is in the media: senders (VLC) place their clock by this.
+        double pos = m_host ? m_host->mediaPosition() : -1.0;
+        if (pos < 0) pos = m_playClock.isValid() ? m_playClock.elapsed() / 1000.0 : 0.0;
+        st[QStringLiteral("currentTime")]    = m_mediaStart + pos;
+        st[QStringLiteral("playbackRate")]   = 1;
+        st[QStringLiteral("supportedMediaCommands")] = 1;  // PAUSE only; seeking is a re-LOAD
+        st[QStringLiteral("volume")] = QJsonObject{{QStringLiteral("level"), 1.0},
+                                                   {QStringLiteral("muted"), false}};
+        st[QStringLiteral("media")] = m_media;
+        list.append(st);
+    }
+    QJsonObject reply;
+    reply[QStringLiteral("type")]      = QStringLiteral("MEDIA_STATUS");
+    reply[QStringLiteral("requestId")] = requestId;
+    reply[QStringLiteral("status")]    = list;
+    sendMessage(makeJsonMsg(m_transportId, dest,
+        QStringLiteral("urn:x-cast:com.google.cast.media"),
+        QJsonDocument(reply).toJson(QJsonDocument::Compact)));
 }
 
 // ── Cast Streaming (OFFER / ANSWER) ───────────────────────────────────────────
@@ -563,7 +610,8 @@ void CastSession::onWebrtc(const CastMessage& msg) {
 }
 
 void CastSession::stopStreaming() {
-    if (!m_streaming) return;
+    // A connected session may also be playing a LOAD'd URL (no m_streaming).
+    if (!m_streaming && !m_didConnect) return;
     m_streaming.reset();
     if (m_host) m_host->stopStream();
 }

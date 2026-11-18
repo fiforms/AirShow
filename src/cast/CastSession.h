@@ -4,6 +4,7 @@
 #pragma once
 #include <QObject>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QString>
 #include <QJsonObject>
 #include <cstdint>
@@ -88,6 +89,8 @@ private:
     void onHeartbeat(const extensions::api::cast_channel::CastMessage& msg);
     void onReceiver(const extensions::api::cast_channel::CastMessage& msg);
     void onMedia(const extensions::api::cast_channel::CastMessage& msg);
+    // MEDIA_STATUS for the current LOAD (empty list when nothing is loaded).
+    void sendMediaStatus(const QString& dest, int requestId);
     void onWebrtc(const extensions::api::cast_channel::CastMessage& msg);
 
     // Tear down the Cast Streaming receiver and its playback pipeline, if running.
@@ -137,6 +140,16 @@ private:
     bool       m_appLaunched   = false;
     QString    m_launchedAppId;
     QString    m_senderName;    // populated on CONNECT message
+
+    // Media (LOAD) state, reported in MEDIA_STATUS. Senders such as VLC re-send
+    // LOAD until they see PLAYING and a stable mediaSessionId.
+    int         m_mediaSessionCounter = 0;
+    int         m_mediaSessionId      = 0;   // 0: nothing loaded
+    QJsonObject m_media;                      // media object of the current LOAD
+    QString     m_playerState         = QStringLiteral("IDLE");
+    QString     m_idleReason;                 // set while IDLE after a LOAD
+    double      m_mediaStart          = 0.0;  // LOAD's currentTime (where in the media we began)
+    QElapsedTimer m_playClock;                // fallback when the host can't report a position
 
     // Active Cast Streaming session (created on OFFER)
     std::unique_ptr<CastStreamingReceiver> m_streaming;

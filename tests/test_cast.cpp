@@ -711,6 +711,9 @@ public:
     std::vector<QString> approvalRequests;
     std::function<void(bool)> pendingApproval;
     int connected = 0;
+    std::vector<QString> played;   // URLs from playUrl()
+    bool playOk = true;
+    std::vector<bool> pauses;      // setPaused() calls
 
     void requestApproval(const QString& name, const QHostAddress&,
                          std::function<void(bool)> done) override {
@@ -720,7 +723,8 @@ public:
     void senderConnected(const QString&) override { ++connected; }
     void senderDisconnected() override { --connected; }
     bool canDecode(const std::string&) override { return false; }
-    bool playUrl(const QString&, bool) override { return false; }
+    bool playUrl(const QString& url, bool) override { played.push_back(url); return playOk; }
+    void setPaused(bool p) override { pauses.push_back(p); }
     bool startStream(const std::string&, const std::string&) override { return false; }
     void pushVideoFrame(const uint8_t*, size_t, bool) override {}
     void pushAudioFrame(const uint8_t*, size_t) override {}
@@ -846,6 +850,58 @@ TEST(CastReceiverTest, StandaloneHostAuthAndApproval) {
     sendCast(sock, jsonMsg(transportId.c_str(), "urn:x-cast:com.google.cast.tp.connection",
                            R"({"type":"CONNECT"})"));
     ASSERT_TRUE(spinUntil([&] { return host.connected == 1; }));
+
+    // LOAD is answered BUFFERING (to the request), then PLAYING, with one stable
+    // mediaSessionId; GET_STATUS then reports the loaded media. Senders (VLC)
+    // re-send LOAD until they see this.
+    const auto statusOf = [](const CastMessage& m) {
+        return QJsonDocument::fromJson(QByteArray::fromStdString(m.payload_utf8())).object();
+    };
+    got.clear();
+    sendCast(sock, jsonMsg(transportId.c_str(), "urn:x-cast:com.google.cast.media",
+        R"({"type":"LOAD","requestId":5,"media":{"contentId":"http://10.0.0.2:8010/s","contentType":"video/x-matroska","streamType":"LIVE"}})"));
+    ASSERT_TRUE(spinUntil([&] { pump(); return got.size() >= 2; }));
+    ASSERT_EQ(host.played.size(), 1u);
+    const QJsonObject buffering = statusOf(got[0]);
+    const QJsonObject playing   = statusOf(got[1]);
+    EXPECT_EQ(buffering["requestId"].toInt(), 5);
+    EXPECT_EQ(buffering["status"].toArray()[0].toObject()["playerState"].toString(), "BUFFERING");
+    EXPECT_EQ(playing["status"].toArray()[0].toObject()["playerState"].toString(), "PLAYING");
+    const int mediaSessionId = playing["status"].toArray()[0].toObject()["mediaSessionId"].toInt();
+    EXPECT_NE(mediaSessionId, 0);
+    EXPECT_EQ(buffering["status"].toArray()[0].toObject()["mediaSessionId"].toInt(), mediaSessionId);
+
+    got.clear();
+    sendCast(sock, jsonMsg(transportId.c_str(), "urn:x-cast:com.google.cast.media",
+                           R"({"type":"GET_STATUS","requestId":6})"));
+    ASSERT_TRUE(spinUntil([&] { pump(); return !got.empty(); }));
+    const QJsonObject polled = statusOf(got[0]);
+    EXPECT_EQ(polled["requestId"].toInt(), 6);
+    ASSERT_EQ(polled["status"].toArray().size(), 1);
+    EXPECT_EQ(polled["status"].toArray()[0].toObject()["playerState"].toString(), "PLAYING");
+    EXPECT_EQ(polled["status"].toArray()[0].toObject()["mediaSessionId"].toInt(), mediaSessionId);
+    EXPECT_EQ(polled["status"].toArray()[0].toObject()["media"].toObject()["contentId"].toString(),
+              "http://10.0.0.2:8010/s");
+
+    // PAUSE / PLAY drive the host and report the new state.
+    for (const bool pause : {true, false}) {
+        got.clear();
+        sendCast(sock, jsonMsg(transportId.c_str(), "urn:x-cast:com.google.cast.media",
+            pause ? R"({"type":"PAUSE","requestId":8})" : R"({"type":"PLAY","requestId":9})"));
+        ASSERT_TRUE(spinUntil([&] { pump(); return !got.empty(); }));
+        EXPECT_EQ(statusOf(got[0])["status"].toArray()[0].toObject()["playerState"].toString(),
+                  pause ? "PAUSED" : "PLAYING");
+    }
+    EXPECT_EQ(host.pauses, (std::vector<bool>{true, false}));
+
+    // A LOAD the host can't play is reported as LOAD_FAILED.
+    host.playOk = false;
+    got.clear();
+    sendCast(sock, jsonMsg(transportId.c_str(), "urn:x-cast:com.google.cast.media",
+        R"({"type":"LOAD","requestId":7,"media":{"contentId":"http://10.0.0.2:8010/t"}})"));
+    ASSERT_TRUE(spinUntil([&] { pump(); return !got.empty(); }));
+    EXPECT_EQ(statusOf(got[0])["type"].toString(), "LOAD_FAILED");
+
     sock.disconnectFromHost();
     ASSERT_TRUE(spinUntil([&] { return host.connected == 0; }));
 
