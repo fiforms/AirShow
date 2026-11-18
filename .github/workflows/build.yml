@@ -2,6 +2,11 @@ name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      arm64_only:
+        description: Build only the Debian trixie arm64 package (Raspberry Pi)
+        type: boolean
+        default: false
 
 env:
   # v1.2.3 for tag builds, otherwise 0.0.0-<short sha>
@@ -10,6 +15,7 @@ env:
 jobs:
   linux:
     name: Linux tests (Ubuntu 24.04)
+    if: ${{ !inputs.arm64_only }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +55,7 @@ jobs:
 
   linux-appimage:
     name: Linux AppImage (Ubuntu 22.04)
+    if: ${{ !inputs.arm64_only }}
     # Oldest supported glibc: the AppImage runs on distros at least this new.
     runs-on: ubuntu-22.04
     steps:
@@ -113,6 +120,7 @@ jobs:
 
   debian:
     name: Debian package (trixie, ${{ matrix.arch }})
+    if: ${{ !inputs.arm64_only || matrix.arch == 'arm64' }}
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +182,7 @@ jobs:
 
   macos:
     name: macOS (Homebrew, Apple Silicon)
+    if: ${{ !inputs.arm64_only }}
     runs-on: macos-15
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -207,6 +216,7 @@ jobs:
 
   windows:
     name: Windows (MSYS2 UCRT64)
+    if: ${{ !inputs.arm64_only }}
     runs-on: windows-latest
     defaults:
       run:
